@@ -36,5 +36,10 @@ homepod-bridge = "homepod_bridge.cli:main"
 [project.gui-scripts]
 homepod-bridge-tray = "homepod_bridge.tray:run_tray"
 
+[project.urls]
+Homepage = "https://github.com/wendachye/homepod-bridge"
+Issues = "https://github.com/wendachye/homepod-bridge/issues"
+Changelog = "https://github.com/wendachye/homepod-bridge/blob/main/CHANGELOG.md"
+
 [tool.setuptools]
 packages = ["homepod_bridge"]
