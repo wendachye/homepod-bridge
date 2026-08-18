@@ -1,0 +1,6 @@
+pyatv>=0.16,<0.19        # AirPlay/RAOP sender (verified against 0.18.0)
+lameenc>=1.6             # MP3 encoder
+PyAudioWPatch>=0.2.12; platform_system == "Windows"   # WASAPI loopback capture
+pystray>=0.19            # system-tray UI
+Pillow>=10               # tray icon rendering
+pytest>=7                # dev: test runner

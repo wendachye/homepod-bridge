@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "homepod-bridge"
+version = "0.12.1"
+description = "Stream Windows system audio to HomePods over AirPlay - an open TuneBlade alternative."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Wenda Chye" }]
+keywords = ["airplay", "homepod", "raop", "wasapi", "loopback", "audio", "streaming"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Win32 (MS Windows)",
+  "Operating System :: Microsoft :: Windows :: Windows 10",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+  "pyatv>=0.16,<0.19",
+  "lameenc>=1.6",
+  "pystray>=0.19",
+  "Pillow>=10",
+  'PyAudioWPatch>=0.2.12; platform_system == "Windows"',
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+homepod-bridge = "homepod_bridge.cli:main"
+
+[project.gui-scripts]
+homepod-bridge-tray = "homepod_bridge.tray:run_tray"
+
+[tool.setuptools]
+packages = ["homepod_bridge"]
