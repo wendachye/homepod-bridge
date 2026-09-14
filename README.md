@@ -109,7 +109,7 @@ so switch Windows to your silent/virtual output *before* connecting.
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install --require-hashes -r requirements-windows.lock
-.venv\Scripts\python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 launcher.py
+.venv\Scripts\python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules homepod_bridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 launcher.py
 ```
 
 Output lands in `dist\HomePodBridge.exe`. CI builds this executable and an

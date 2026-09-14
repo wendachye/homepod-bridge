@@ -8,6 +8,35 @@ import traceback
 from pathlib import Path
 
 
+def _check_windows_ui() -> None:
+    """Create and close two real popups through the persistent UI service."""
+    from . import volume_slider
+
+    original_window = volume_slider.FlyoutWindow
+    created = 0
+
+    class SmokeWindow(original_window):
+        def __init__(self, *args, **kwargs):
+            nonlocal created
+            super().__init__(*args, **kwargs)
+            created += 1
+            # Close only after Tk has built the popup and entered its event loop.
+            # A true should_close predicate would skip window creation entirely.
+            self._schedule(0, self.close)
+
+    volume_slider.FlyoutWindow = SmokeWindow
+    try:
+        for _ in range(2):
+            volume_slider.open_slider(50, lambda value: None)
+    finally:
+        try:
+            volume_slider.shutdown_slider()
+        finally:
+            volume_slider.FlyoutWindow = original_window
+    if created != 2:
+        raise RuntimeError(f"Tk reopen check created {created} windows; expected 2")
+
+
 def run_smoke_check(report_path: Path) -> int:
     """Exercise packaged imports, codec and UI teardown without audio hardware."""
     checks = []
@@ -32,13 +61,7 @@ def run_smoke_check(report_path: Path) -> int:
         if sys.platform == "win32":
             importlib.import_module("pyaudiowpatch")
             importlib.import_module("pystray._win32")
-            from .volume_slider import open_slider, shutdown_slider
-
-            try:
-                for _ in range(2):
-                    open_slider(50, lambda value: None, should_close=lambda: True)
-            finally:
-                shutdown_slider()
+            _check_windows_ui()
             checks.extend(["Windows capture import", "Windows tray import", "Tk reopen and shutdown"])
         report["ok"] = True
     except Exception:
