@@ -1,0 +1,5 @@
+# Combined with pyproject.toml to lock the Windows/Python 3.12 release build.
+build>=1.2
+setuptools>=77
+wheel>=0.45
+pyinstaller>=6.11

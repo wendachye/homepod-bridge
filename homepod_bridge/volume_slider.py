@@ -9,9 +9,9 @@ dragging it sets EVERY device), and - when two or more devices are streaming
 - one labeled slider per device below it, so different rooms can run at
 different levels. Each row is a :class:`_SliderRow`: custom-drawn canvas
 (dark track, accent fill, round thumb) with its own :class:`SendThrottle`.
-Mouse wheel adjusts the row under the pointer (master elsewhere). A fresh Tk
-root lives and dies inside the calling thread, so no tkinter object ever
-crosses threads.
+Mouse wheel adjusts the row under the pointer (master elsewhere). A dedicated
+worker owns one Tk interpreter and all popup windows; callers exchange plain
+requests and completion events, never tkinter objects.
 
 Layout rule learned the hard way: the percentage label and close button are
 packed on the *right first*, because pack() honours earlier widgets' size
@@ -24,8 +24,9 @@ rendered-layout tests when a display is available.
 """
 from __future__ import annotations
 
-import gc
+import queue
 import sys
+import threading
 import time
 from typing import Callable, Optional, Sequence, Tuple
 
@@ -36,6 +37,7 @@ __all__ = [
     "value_to_x",
     "FlyoutWindow",
     "open_slider",
+    "shutdown_slider",
 ]
 
 WIDTH, HEIGHT = 300, 64
@@ -257,29 +259,6 @@ class _SliderRow:
         self._on_apply(self, x_to_value(event.x, left, right), False)
 
 
-# --------------------------------------------------------------- teardown
-#: Closed flyouts are kept alive deliberately, forever.
-#:
-#: Tk's interpreter must be deleted by the thread that created it. The
-#: flyout runs on a short-lived worker thread, so once that thread exits the
-#: only thing that can finalize the interpreter is a garbage collection -
-#: which happens on whatever thread happens to trigger it. When that is not
-#: the creating thread, Tcl calls Tcl_Panic and the WHOLE PROCESS dies with
-#: no Python traceback (observed: pythonw.exe faulting in tcl86t.dll,
-#: exception 0x80000003, three times in one evening).
-#:
-#: Forcing a collect on the worker thread does NOT fix it - a global collect
-#: also finalizes Tk objects belonging to other threads, which panics for
-#: the same reason. Holding a permanent reference is what actually makes the
-#: finalizer unreachable. The window is destroyed first, so what leaks is a
-#: dormant interpreter, not widgets or timers.
-_RETIRED: list = []
-
-
-def _retire(window) -> None:
-    _RETIRED.append(window)
-
-
 # ------------------------------------------------------------------- window
 class FlyoutWindow:
     """The flyout itself. Construct, then :meth:`run` to block until closed."""
@@ -292,6 +271,8 @@ class FlyoutWindow:
         should_close: Optional[Callable[[], bool]] = None,
         devices: Sequence[Tuple[str, float]] = (),
         set_device_volume: Optional[Callable[[str, float], object]] = None,
+        *,
+        master=None,
     ) -> None:
         import tkinter as tk
 
@@ -300,8 +281,20 @@ class FlyoutWindow:
         self._should_close = should_close
         self._closing = False
         self._seq = 0  # global touch counter across rows
+        self._after_ids: set = set()
+        self._master = None
+        self._device_rows: list = []
+        self._row_widgets: dict = {}
+        self.canvas = self.pct = self.master_label = None
+        self.root = None
+        try:
+            self._build(tk, initial, devices, master)
+        except Exception:
+            self.close()
+            raise
 
-        self.root = tk.Tk()
+    def _build(self, tk, initial, devices, master) -> None:
+        self.root = tk.Tk() if master is None else tk.Toplevel(master)
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BORDER)  # outer 1px border
@@ -380,7 +373,7 @@ class FlyoutWindow:
         _round_corners(self.root)
         self.root.deiconify()
         self.root.focus_force()
-        self.root.after(int(SEND_INTERVAL * 1000), self._pump)
+        self._schedule(int(SEND_INTERVAL * 1000), self._pump)
 
     # ------------------------------------------------------------ behaviour
     @property
@@ -399,15 +392,7 @@ class FlyoutWindow:
             # engine arrival order matches interaction order - otherwise
             # close() could flush a stale master over this newer tweak.
             self._master.flush()
-        before = row.value
         row.apply(v, live, self._seq)
-        if row is self._master and row.value != before:
-            # Engine semantics: the master sets EVERY device - mirror that in
-            # the UI. Gated on an actual master change: a click at the
-            # thumb's current position sends nothing (duplicate-suppressed),
-            # so mirroring then would show levels the devices never got.
-            for r in self._device_rows:
-                r.set_display(self._master.value)
 
     def _send_master(self, v: float) -> None:
         try:
@@ -416,6 +401,12 @@ class FlyoutWindow:
             self.close()  # engine loop closed (quit) - nothing left to talk to
         except Exception:  # noqa: BLE001 - transient failure; keep the flyout
             pass
+        else:
+            # Only an emitted command changes the devices. A pending master
+            # drag can return to its baseline and be cancelled by the throttle;
+            # mirroring that preview would erase room overrides only in the UI.
+            for row in self._device_rows:
+                row.set_display(v)
 
     def _send_device(self, name: str, v: float) -> None:
         if self._set_device_volume is None:
@@ -454,11 +445,26 @@ class FlyoutWindow:
             return
         for r in self._all_rows():
             r.poll()
-        self.root.after(int(SEND_INTERVAL * 1000), self._pump)
+            if self._closing:
+                return
+        self._schedule(int(SEND_INTERVAL * 1000), self._pump)
+
+    def _schedule(self, delay: int, callback) -> None:
+        if self._closing:
+            return
+
+        def run_callback():
+            self._after_ids.discard(token)
+            callback()
+
+        token = self.root.after(delay, run_callback)
+        self._after_ids.add(token)
 
     def _on_focus_out(self, _event) -> None:
+        if self._closing:
+            return
         # Delay so focus moving between our own widgets doesn't close us.
-        self.root.after(
+        self._schedule(
             80,
             lambda: None
             if self._closing or self.root.focus_displayof()
@@ -476,13 +482,179 @@ class FlyoutWindow:
                 row.flush()
             except Exception:  # noqa: BLE001
                 pass
+        for token in self._after_ids:
+            try:
+                self.root.after_cancel(token)
+            except Exception:  # noqa: BLE001
+                pass
+        self._after_ids.clear()
         try:
             self.root.destroy()
         except Exception:  # noqa: BLE001 - window already gone
             pass
+        finally:
+            # Break Python callback/widget cycles while still on the Tk owner.
+            # Destroying widgets alone does not release their interpreter if
+            # rows keep bound methods pointing back to this window.
+            for row in self._all_rows():
+                row._emit = None
+                row._on_apply = None
+            self._row_widgets.clear()
+            self._device_rows.clear()
+            self._master = None
+            self.canvas = self.pct = self.master_label = None
+            self.root = None
 
     def run(self) -> None:
-        self.root.mainloop()
+        if not self._closing:
+            try:
+                self.root.wait_window()
+            finally:
+                self.close()
+
+
+class _SliderRequest:
+    def __init__(self, kwargs: dict) -> None:
+        self.kwargs = kwargs
+        self.done = threading.Event()
+        self.error: Optional[RuntimeError] = None
+
+
+def _new_root():
+    import tkinter as tk
+
+    root = tk.Tk()
+    # Widgets always receive an explicit parent. Do not leave this worker's
+    # interpreter reachable through tkinter's process-wide default root.
+    if getattr(tk, "_default_root", None) is root:
+        tk._default_root = None
+    try:
+        root.withdraw()
+    except Exception:
+        _destroy_root(root)
+        raise
+    return root
+
+
+def _destroy_root(root) -> None:
+    """Release Python/Tcl callback cycles even if native window teardown fails."""
+    widgets, pending = [], [root]
+    while pending:
+        widget = pending.pop()
+        widgets.append(widget)
+        pending.extend(getattr(widget, "children", {}).values())
+    try:
+        root.destroy()
+    finally:
+        for widget in widgets:
+            for command in getattr(widget, "_tclCommands", None) or ():
+                try:
+                    widget.tk.deletecommand(command)
+                except Exception:  # noqa: BLE001 - command may already be gone
+                    pass
+            if hasattr(widget, "_tclCommands"):
+                widget._tclCommands = None
+            if hasattr(widget, "children"):
+                widget.children.clear()
+            if hasattr(widget, "master"):
+                widget.master = None
+
+
+class _SliderService:
+    """Own the interpreter for the entire application, including finalization."""
+
+    def __init__(self, root_factory=None, window_factory=None) -> None:
+        self._root_factory = root_factory or _new_root
+        self._window_factory = window_factory or FlyoutWindow
+        self._requests: queue.Queue = queue.Queue()
+        self._stopping = threading.Event()
+        self._teardown_error: Optional[str] = None
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(
+            target=self._run, name="volume-ui", daemon=True
+        )
+        self._thread.start()
+
+    def submit(self, request: _SliderRequest) -> None:
+        with self._lock:
+            if self._stopping.is_set():
+                raise RuntimeError("Volume flyout is shutting down")
+            self._requests.put(request)
+
+    def shutdown(self, timeout: float) -> None:
+        with self._lock:
+            self._stopping.set()
+            self._requests.put(None)
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            raise RuntimeError("Volume flyout did not finish shutting down")
+        if self._teardown_error is not None:
+            raise RuntimeError(self._teardown_error)
+
+    def _run(self) -> None:
+        # These references remain local to the owner thread. No service field,
+        # result, or propagated exception may retain a Tk widget/interpreter.
+        root = None
+        try:
+            while True:
+                request = self._requests.get()
+                if request is None:
+                    return
+                window = None
+                cleanup_failed = False
+                try:
+                    if self._stopping.is_set():
+                        continue
+                    should_close = request.kwargs.get("should_close")
+                    if should_close is not None and should_close():
+                        continue
+                    if root is None:
+                        root = self._root_factory()
+                    kwargs = dict(request.kwargs)
+                    kwargs["should_close"] = lambda: self._stopping.is_set() or (
+                        should_close is not None and should_close()
+                    )
+                    window = self._window_factory(master=root, **kwargs)
+                    window.run()
+                except Exception as exc:  # noqa: BLE001 - report on calling thread
+                    # The original traceback can hold widgets; never send it
+                    # across threads or let the caller retain the interpreter.
+                    request.error = RuntimeError(f"Could not open volume flyout: {exc}")
+                finally:
+                    try:
+                        if window is not None:
+                            window.close()
+                    except Exception as exc:  # noqa: BLE001
+                        request.error = RuntimeError(f"Could not close volume flyout: {exc}")
+                        cleanup_failed = True
+                    finally:
+                        window = None
+                        request.done.set()
+                        request = None
+                if cleanup_failed:
+                    return  # do not reuse an interpreter after incomplete cleanup
+        finally:
+            with self._lock:
+                self._stopping.set()
+                while True:
+                    try:
+                        pending = self._requests.get_nowait()
+                    except queue.Empty:
+                        break
+                    if pending is not None:
+                        pending.error = RuntimeError("Volume flyout has stopped")
+                        pending.done.set()
+            try:
+                if root is not None:
+                    _destroy_root(root)
+            except Exception as exc:  # noqa: BLE001 - no Tk traceback crosses threads
+                self._teardown_error = f"Could not shut down volume UI: {exc}"
+            finally:
+                root = None  # release the interpreter on its creating thread
+
+
+_service: Optional[_SliderService] = None
+_service_lock = threading.Lock()
 
 
 def open_slider(
@@ -493,16 +665,37 @@ def open_slider(
     devices: Sequence[Tuple[str, float]] = (),
     set_device_volume: Optional[Callable[[str, float], object]] = None,
 ) -> None:
-    """Blocking: shows the flyout until closed (Esc or click-away)."""
-    window = FlyoutWindow(
-        initial, set_volume, title, should_close, devices, set_device_volume
+    """Block until this popup closes; all Tk work runs on one persistent owner."""
+    global _service
+    request = _SliderRequest(
+        dict(
+            initial=initial,
+            set_volume=set_volume,
+            title=title,
+            should_close=should_close,
+            devices=devices,
+            set_device_volume=set_device_volume,
+        )
     )
-    try:
-        window.run()
-    finally:
-        try:
-            if window.root is not None:
-                window.root.destroy()
-        except Exception:  # noqa: BLE001 - already destroyed by close()
-            pass
-        _retire(window)
+    with _service_lock:
+        if should_close is not None and should_close():
+            return  # a delayed tray caller must not create Tk after quit
+        if _service is None:
+            _service = _SliderService()
+        _service.submit(request)
+    request.done.wait()
+    if request.error is not None:
+        raise request.error
+
+
+def shutdown_slider(timeout: float = 5.0) -> None:
+    """Close any popup and release Tk on its owner thread before process exit."""
+    global _service
+    with _service_lock:
+        service = _service
+    if service is None:
+        return
+    service.shutdown(timeout)
+    with _service_lock:
+        if _service is service:
+            _service = None

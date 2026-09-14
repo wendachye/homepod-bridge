@@ -135,6 +135,129 @@ def test_playback_is_not_over_produced_with_phantom_silence():
     assert len(silent) <= 2, f"{len(silent)} silence chunks injected mid-playback"
 
 
+class CaptureClock:
+    """Event/monotonic pair that runs the reader without sleeping."""
+
+    def __init__(self, duration, stall_at=None, stall_seconds=0):
+        self.now = 0.0
+        self.duration = duration
+        self.stall_at = stall_at
+        self.stall_seconds = stall_seconds
+        self.stopped = False
+
+    def monotonic(self):
+        return self.now
+
+    def is_set(self):
+        return self.stopped or self.now >= self.duration
+
+    def set(self):
+        self.stopped = True
+
+    def wait(self, timeout):
+        assert timeout > 0, "capture must wait instead of spinning"
+        self.now = min(self.duration, self.now + timeout)
+        if self.stall_at is not None and self.now >= self.stall_at:
+            self.now = min(self.duration, self.now + self.stall_seconds)
+            self.stall_at = None
+        return self.is_set()
+
+
+class PacketStream:
+    """480-frame packets on a deterministic 10ms device clock."""
+
+    def __init__(self, clock, active=lambda packet: True):
+        self.clock = clock
+        self.active = active
+        self.packets = 0
+        self.available = 0
+
+    def get_read_available(self):
+        due = int((self.clock.now + 1e-9) / 0.010)
+        while self.packets < due:
+            if self.active(self.packets):
+                self.available += 480
+            self.packets += 1
+        return self.available
+
+    def read(self, frames, exception_on_overflow=False):
+        assert frames <= self.available, "reader would block in native read"
+        self.available -= frames
+        return b"\x01" * (frames * 4)
+
+
+def run_with_clock(monkeypatch, clock, stream):
+    from homepod_bridge import capture as capture_mod
+
+    chunks = []
+    cap = bare_capture(lambda data: chunks.append((clock.now, data)), None, stream=stream)
+    cap._stop = clock
+    monkeypatch.setattr(capture_mod.time, "monotonic", clock.monotonic)
+    cap._run()
+    return chunks
+
+
+@pytest.mark.parametrize("packets_per_interval", [1, 10])
+def test_short_silent_gaps_keep_the_audio_timeline(monkeypatch, packets_per_interval):
+    """Alternating audio/no-frame intervals must not become continuous audio."""
+    clock = CaptureClock(3.0)
+    stream = PacketStream(
+        clock, active=lambda packet: (packet // packets_per_interval) % 2 == 0
+    )
+    chunks = run_with_clock(monkeypatch, clock, stream)
+    audio_seconds = sum(len(data) for _, data in chunks) / (4 * 48000)
+    real_seconds = sum(len(data) for _, data in chunks if data[0]) / (4 * 48000)
+
+    # Only the final, not-yet-confirmed silent interval may remain pending.
+    assert 2.85 <= audio_seconds <= 3.0
+    assert 1.45 <= real_seconds <= 1.5
+    # On each resumption the missing samples must precede the new audio;
+    # silence cannot be deferred into an ever-larger future catch-up. Allow
+    # packet/chunk timing slack, including a queued partial native chunk.
+    emitted = 0
+    for timestamp, data in chunks:
+        emitted += len(data) / (4 * 48000)
+        if data[0]:
+            assert timestamp - emitted < 0.060
+
+
+def test_packet_jitter_does_not_accumulate_phantom_silence(monkeypatch):
+    clock = CaptureClock(60.0)
+    chunks = run_with_clock(monkeypatch, clock, PacketStream(clock))
+    assert chunks and all(data[0] for _, data in chunks)
+    audio_seconds = sum(len(data) for _, data in chunks) / (4 * 48000)
+    assert 59.96 <= audio_seconds <= 60.0
+
+
+def test_delayed_polling_accounts_for_queued_real_audio(monkeypatch):
+    clock = CaptureClock(1.0, stall_at=0.05, stall_seconds=0.3)
+    chunks = run_with_clock(monkeypatch, clock, PacketStream(clock))
+    assert chunks and all(data[0] for _, data in chunks)
+    audio_seconds = sum(len(data) for _, data in chunks) / (4 * 48000)
+    assert 0.96 <= audio_seconds <= 1.0
+
+
+def test_silence_then_playback_keeps_one_timeline(monkeypatch):
+    clock = CaptureClock(3.0)
+    stream = PacketStream(clock, active=lambda packet: packet >= 100)
+    chunks = run_with_clock(monkeypatch, clock, stream)
+    audio_seconds = sum(len(data) for _, data in chunks) / (4 * 48000)
+    assert 2.95 <= audio_seconds <= 3.01
+    # Once playback is continuous the earlier silent period must not keep
+    # creating additional padding or permanent excess in the stream.
+    assert all(data[0] for timestamp, data in chunks if timestamp >= 1.05)
+
+
+def test_long_stall_does_not_burst_historical_silence(monkeypatch):
+    clock = CaptureClock(3.0, stall_at=0.05, stall_seconds=2.0)
+    chunks = run_with_clock(monkeypatch, clock, SilentStream())
+    assert chunks
+    resumed_at = min(timestamp for timestamp, _ in chunks)
+    assert sum(timestamp == resumed_at for timestamp, _ in chunks) == 1
+    audio_seconds = sum(len(data) for _, data in chunks) / (4 * 48000)
+    assert audio_seconds < 1.0
+
+
 def test_silent_capture_stops_promptly():
     """The 2s join timeout used to expire on every disconnect with audio
     paused, forcing the deliberate-leak path."""

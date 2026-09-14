@@ -25,7 +25,7 @@ def test_config_roundtrip(tmp_path):
 def test_config_coerces_and_clamps_device_volumes(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(
-        json.dumps({"device_volumes": {"Kitchen": "25", "Bedroom": 250}}), "utf-8"
+        json.dumps({"schema_version": 2, "device_volumes": {"Kitchen": "25", "Bedroom": 250}}), "utf-8"
     )
     loaded = ConfigStore(path).load()
     assert loaded.device_volumes == {"Kitchen": 25.0, "Bedroom": 100.0}
@@ -80,6 +80,7 @@ def test_config_coerces_field_types(tmp_path):
     path.write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "volume": "72",
                 "devices": [1, "Living Room"],
                 "autoconnect": 1,
@@ -110,10 +111,10 @@ def snap(state, selected=(), connected=(), volume=50.0) -> Snapshot:
     return Snapshot(
         state=state,
         devices=(dev("Living Room"), dev("Living Room (2)")),
-        selected=selected,
-        connected=connected,
+        selected=tuple("id-" + n for n in selected),
+        connected=tuple("id-" + n for n in connected),
         volume=volume,
-        volumes=tuple((n, volume) for n in selected),
+        volumes=tuple(("id-" + n, volume) for n in selected),
     )
 
 
@@ -247,3 +248,71 @@ def test_audio_delay_choice_persists_and_reconnects(tmp_path):
 
 def test_connecting_status_text():
     assert status_text(snap(EngineState.CONNECTING, selected=("x",))) == "Connecting..."
+
+
+def test_legacy_config_migrates_unique_names_and_preserves_undiscovered_names(tmp_path):
+    store = ConfigStore(tmp_path / "config.json")
+    store.path.write_text(json.dumps({"devices": ["Living Room", "Kitchen"],
+                                     "device_volumes": {"Living Room": 25, "Kitchen": 70}}))
+    cfg = store.load()
+    assert cfg.devices == [] and cfg.device_volumes == {}
+    assert cfg.resolve_legacy([dev("Living Room")])
+    assert cfg.devices == ["id-Living Room"]
+    assert cfg.device_volumes == {"id-Living Room": 25}
+    assert cfg.legacy_devices == ["Kitchen"]
+    assert cfg.legacy_device_volumes == {"Kitchen": 70}
+    store.save(cfg)
+    assert store.load() == cfg
+
+
+def test_ambiguous_legacy_selection_requires_explicit_reselection(tmp_path):
+    from dataclasses import replace
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.path.write_text(json.dumps({"devices": ["Bedroom"], "device_volumes": {"Bedroom": 95}}))
+    cfg = store.load()
+    devices = [replace(dev("Bedroom"), identifier="one"), replace(dev("Bedroom"), identifier="two")]
+    assert cfg.resolve_legacy(devices)
+    assert cfg.devices == [] and cfg.device_volumes == {}
+    assert cfg.legacy_devices == [] and cfg.legacy_device_volumes == {}
+    # An ambiguous saved name cannot later become attached to whichever
+    # speaker happens to be online when the other disappears.
+    assert not cfg.resolve_legacy(devices[:1])
+    assert cfg.devices == []
+
+
+def test_duplicate_names_have_distinct_labels_and_identifier_menu_actions():
+    from dataclasses import replace
+
+    devices = (replace(dev("Bedroom"), identifier="one"),
+               replace(dev("Bedroom"), identifier="two"))
+    s = Snapshot(EngineState.IDLE, devices, ("one",), (), 50)
+    items = [item for item in flat(build_menu_spec(s, False)) if item.action and item.action.startswith("toggle:")]
+    assert len({item.label for item in items}) == 2
+    assert [item.action for item in items] == ["toggle:one", "toggle:two"]
+    assert [item.checked for item in items] == [True, False]
+    assert all(item.label.startswith("Bedroom") for item in items)
+
+
+def test_duplicate_name_slider_row_routes_to_its_identifier(tmp_path):
+    from dataclasses import replace
+    from tests.test_pystray_menu import FakeEngine
+    from homepod_bridge.tray import TrayApp
+
+    devices = (replace(dev("Bedroom"), identifier="one"),
+               replace(dev("Bedroom"), identifier="two"))
+    s = Snapshot(EngineState.STREAMING, devices, ("one", "two"), ("one", "two"), 50,
+                 volumes=(("one", 20), ("two", 70)))
+    engine = FakeEngine(s)
+
+    def slider(**kwargs):
+        rows = kwargs["devices"]
+        assert len({label for label, _ in rows}) == 2
+        kwargs["set_device_volume"](rows[1][0], 35)
+
+    store = ConfigStore(tmp_path / "config.json")
+    app = TrayApp(engine=engine, store=store, slider_factory=slider)
+    app._open_volume_slider()
+    app._slider_thread.join(2)
+    assert ("set_device_volume_nowait", "two", 35) in engine.calls
+    assert store.load().device_volumes == {"two": 35}

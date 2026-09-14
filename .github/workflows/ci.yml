@@ -13,6 +13,8 @@ jobs:
           - os: ubuntu-latest
             python: "3.12"
           - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
             python: "3.12"
           - os: windows-latest
             python: "3.14"
@@ -35,3 +37,55 @@ jobs:
       - name: Test (Windows)
         if: runner.os == 'Windows'
         run: python -m pytest tests/ -q
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked build environment
+        run: python -m pip install --require-hashes -r requirements-windows.lock
+      - name: Build and install wheel
+        shell: pwsh
+        run: |
+          python -m build --wheel --no-isolation
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = (Get-ChildItem dist/*.whl).FullName
+          Push-Location $env:RUNNER_TEMP
+          python -m pip install --force-reinstall --no-deps $wheel
+      - name: Test installed wheel outside source checkout
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $validation = Join-Path $env:RUNNER_TEMP 'wheel-validation'
+          New-Item -ItemType Directory -Path $validation -Force | Out-Null
+          Copy-Item tests "$validation/tests" -Recurse
+          Push-Location $validation
+          python -c "import os, pathlib, homepod_bridge; assert not pathlib.Path(homepod_bridge.__file__).resolve().is_relative_to(pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()), 'imported the source checkout'"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pytest tests -q
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m homepod_bridge.smoke_check "$env:RUNNER_TEMP/wheel-smoke.json"
+      - name: Build Windows executable
+        run: python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 launcher.py
+      - name: Check frozen executable startup and normal exit
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'exe-smoke.json'
+          $exe = (Resolve-Path 'dist/HomePodBridge.exe').Path
+          $proc = Start-Process -FilePath $exe -ArgumentList @('--self-test', "`"$report`"") -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          if (-not $proc.WaitForExit(60000)) { $proc.Kill($true); throw 'EXE self-test timed out' }
+          if ($proc.ExitCode -ne 0) { throw "EXE exited with $($proc.ExitCode)" }
+          if (-not (Test-Path $report)) { throw 'EXE did not write its self-test report' }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw (Get-Content $report -Raw) }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-build-and-smoke-results
+          path: |
+            dist/*.whl
+            dist/HomePodBridge.exe
+            ${{ runner.temp }}/*-smoke.json

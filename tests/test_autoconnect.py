@@ -116,9 +116,13 @@ class BootFakeEngine:
 
     def start_selected(self):
         self.start_calls += 1
-        if {d.name for d in self._devices}.intersection(self._selected):
+        if {d.identifier for d in self._devices}.intersection(self._selected):
             self._state = EngineState.STREAMING
             self.started.set()
+        return self._snap()
+
+    def stop_streaming(self):
+        self._state = EngineState.IDLE
         return self._snap()
 
     def shutdown(self):
@@ -127,7 +131,7 @@ class BootFakeEngine:
 
 def make_app(tmp_path, engine) -> TrayApp:
     store = ConfigStore(tmp_path / "config.json")
-    store.save(BridgeConfig(devices=["Living Room"], autoconnect=True))
+    store.save(BridgeConfig(devices=["id-Living Room"], autoconnect=True))
     return TrayApp(engine=engine, store=store, slider_factory=lambda **kw: None)
 
 
@@ -156,3 +160,90 @@ def test_autoconnect_stops_immediately_on_quit(tmp_path):
     app._autoconnect_with_retry(attempts=50, delay=0.05)
     time.sleep(0.2)
     assert engine.start_calls == 0
+
+
+class BlockingScanEngine(BootFakeEngine):
+    def __init__(self):
+        super().__init__(empty_scans=0)
+        self.scanning = threading.Event()
+        self.finish_scan = threading.Event()
+        self.selection_calls = 0
+
+    def rescan(self, timeout=6):
+        self.scanning.set()
+        assert self.finish_scan.wait(3)
+        return super().rescan(timeout)
+
+    def set_selected(self, names):
+        self.selection_calls += 1
+        return super().set_selected(names)
+
+
+def test_disabling_autoconnect_cancels_inflight_discovery(tmp_path):
+    engine = BlockingScanEngine()
+    app = make_app(tmp_path, engine)
+    app._autoconnect_with_retry(attempts=2, delay=0.01)
+    assert engine.scanning.wait(2)
+    app.dispatch("autoconnect")  # returns even while discovery is blocked
+    assert app.cfg.autoconnect is False
+    engine.finish_scan.set()
+    app._autoconnect_thread.join(2)
+    assert not app._autoconnect_thread.is_alive()
+    assert engine.start_calls == 0 and engine.selection_calls == 0
+
+
+def test_manual_disconnect_wins_over_inflight_autoconnect(tmp_path):
+    engine = BlockingScanEngine()
+    app = make_app(tmp_path, engine)
+    app._autoconnect_with_retry(attempts=2, delay=0.01)
+    assert engine.scanning.wait(2)
+    engine._state = EngineState.STREAMING
+    app.dispatch("toggle_stream")
+    assert engine.snapshot().state is EngineState.IDLE
+    engine.finish_scan.set()
+    app._autoconnect_thread.join(2)
+    assert engine.start_calls == 0 and engine.selection_calls == 0
+    assert app._manual_disconnect
+    app._autoconnect_with_retry(attempts=1)  # resume cannot revive manual stop
+    assert engine.start_calls == 0
+
+
+def test_quit_cancels_inflight_discovery_before_selection_or_start(tmp_path):
+    engine = BlockingScanEngine()
+    app = make_app(tmp_path, engine)
+    app._autoconnect_with_retry(attempts=2, delay=0.01)
+    assert engine.scanning.wait(2)
+    app.quit()
+    engine.finish_scan.set()
+    app._autoconnect_thread.join(2)
+    assert engine.start_calls == 0 and engine.selection_calls == 0
+
+
+def test_startup_scan_cannot_restore_selection_after_manual_action(tmp_path):
+    from types import SimpleNamespace
+
+    engine = BlockingScanEngine()
+    app = make_app(tmp_path, engine)
+    startup = threading.Thread(target=app._setup, args=(SimpleNamespace(visible=False),))
+    startup.start()
+    assert engine.scanning.wait(2)
+    app.dispatch("toggle_stream")  # explicitly tries to connect, invalidating boot work
+    manual_calls = engine.start_calls
+    engine.finish_scan.set()
+    startup.join(2)
+    app.quit()
+    assert engine.selection_calls == 0
+    assert engine.start_calls == manual_calls
+
+
+def test_replacing_an_autoconnect_attempt_invalidates_its_scan(tmp_path):
+    engine = BlockingScanEngine()
+    app = make_app(tmp_path, engine)
+    app._autoconnect_with_retry(attempts=2, delay=0.01)
+    old_worker = app._autoconnect_thread
+    assert engine.scanning.wait(2)
+    app._autoconnect_with_retry(attempts=2, delay=0.01)
+    engine.finish_scan.set()
+    old_worker.join(2)
+    app._autoconnect_thread.join(2)
+    assert engine.start_calls == 1 and engine.selection_calls == 1

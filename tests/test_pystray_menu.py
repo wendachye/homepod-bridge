@@ -44,10 +44,10 @@ def snap(state, selected=(), connected=(), volume=50.0) -> Snapshot:
     return Snapshot(
         state=state,
         devices=(dev("Living Room"), dev("Living Room (2)")),
-        selected=selected,
-        connected=connected,
+        selected=tuple("id-" + n for n in selected),
+        connected=tuple("id-" + n for n in connected),
         volume=volume,
-        volumes=tuple((n, volume) for n in selected),
+        volumes=tuple(("id-" + n, volume) for n in selected),
     )
 
 
@@ -179,8 +179,9 @@ def test_clicks_dispatch_to_engine_with_correct_arguments(tmp_path):
     items["Living Room (2)"](None)
     items["Rescan"](None)
     assert ("start_selected",) in engine.calls
-    assert ("toggle_device", "Living Room (2)") in engine.calls
-    assert ("rescan",) in engine.calls
+    assert ("toggle_device", "id-Living Room (2)") in engine.calls
+    from tests.test_engine import wait_until
+    assert wait_until(lambda: ("rescan",) in engine.calls)
 
     items["Volume (50%)..."](None)  # opens the slider popup thread
     assert opened["event"].wait(timeout=2.0)
@@ -226,7 +227,7 @@ def test_volume_slider_gets_device_rows_when_multiple_selected(tmp_path):
         ("Living Room (2)", 50.0),
     ]
     opened["kwargs"]["set_device_volume"]("Living Room", 30.0)
-    assert ("set_device_volume_nowait", "Living Room", 30.0) in engine.calls
+    assert ("set_device_volume_nowait", "id-Living Room", 30.0) in engine.calls
 
 
 def test_volume_slider_hides_device_rows_for_single_device(tmp_path):
@@ -284,7 +285,7 @@ def test_slider_close_persists_master_and_device_volumes(tmp_path):
 
     saved = store.load()
     assert saved.volume == 80.0
-    assert saved.device_volumes == {"Living Room": 30.0}
+    assert saved.device_volumes == {"id-Living Room": 30.0}
 
 
 def test_left_click_toggles_stream(tmp_path):

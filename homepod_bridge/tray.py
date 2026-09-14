@@ -127,7 +127,8 @@ def build_menu_spec(
     )
 
     dev_children: List[Item] = [
-        Item(label=d.name, action=f"toggle:{d.name}", checked=(d.name in s.selected))
+        Item(label=s.device_label(d.identifier), action=f"toggle:{d.identifier}",
+             checked=(d.identifier in s.selected))
         for d in s.devices
     ] or [Item(label="No streamable devices found", enabled=False)]
     dev_children += [SEP, Item(label="Rescan", action="rescan")]
@@ -175,6 +176,13 @@ class TrayApp:
         self._slider_open = threading.Event()
         self._slider_thread: Optional[threading.Thread] = None
         self._quitting = threading.Event()
+        # Scans run outside this lock. Only applying their results and user
+        # session commands are serialized, so Disconnect can invalidate an
+        # in-flight scan immediately and its late result cannot reconnect.
+        self._action_lock = threading.RLock()
+        self._autoconnect_cancel = threading.Event()
+        self._autoconnect_thread: Optional[threading.Thread] = None
+        self._manual_disconnect = False
         self._save_lock = threading.Lock()  # message thread vs slider thread
         self.store = store or ConfigStore()
         self.cfg: BridgeConfig = self.store.load()
@@ -214,7 +222,7 @@ class TrayApp:
             and self.icon is not None
         ):
             try:
-                self.icon.notify(", ".join(snap.connected), "Streaming")
+                self.icon.notify(", ".join(snap.device_label(d) for d in snap.connected), "Streaming")
             except Exception:  # noqa: BLE001 - notifications are best-effort
                 logger.debug("notify failed", exc_info=True)
 
@@ -316,17 +324,24 @@ class TrayApp:
     def dispatch(self, action: str) -> None:
         try:
             if action == "toggle_stream":
-                # State-aware so a stale menu label still does the right thing.
-                if self.engine.snapshot().state is EngineState.IDLE:
-                    self.engine.start_selected()
-                else:
-                    self.engine.stop_streaming()
+                self._cancel_autoconnect()
+                with self._action_lock:
+                    # State-aware so a stale menu label still does the right thing.
+                    if self.engine.snapshot().state is EngineState.IDLE:
+                        self._manual_disconnect = False
+                        self.engine.start_selected()
+                    else:
+                        self._manual_disconnect = True
+                        self.engine.stop_streaming()
             elif action == "rescan":
-                self.engine.rescan()
+                threading.Thread(target=self._rescan_devices, name="device-scan", daemon=True).start()
             elif action.startswith("toggle:"):
-                snap = self.engine.toggle_device(action[len("toggle:"):])
-                self.cfg.devices = list(snap.selected)
-                self._save()
+                self._cancel_autoconnect()
+                with self._action_lock:
+                    snap = self.engine.toggle_device(action[len("toggle:"):])
+                    self.cfg.devices = list(snap.selected)
+                    self.cfg.legacy_devices.clear()
+                    self._save()
             elif action == "volume_slider":
                 self._open_volume_slider()
             elif action == "open_logs":
@@ -345,13 +360,18 @@ class TrayApp:
                 self._save()
                 # The hold is read when a session starts, so reconnect to
                 # apply it - otherwise the change appears to do nothing.
-                if self.engine.snapshot().state is not EngineState.IDLE:
-                    self.engine.stop_streaming()
-                    self.engine.start_selected()
+                with self._action_lock:
+                    if self.engine.snapshot().state is not EngineState.IDLE:
+                        self.engine.stop_streaming()
+                        self.engine.start_selected()
             elif action == "autoconnect":
-                self.cfg.autoconnect = not self.cfg.autoconnect
-                self._save()
-                self._refresh_icon(self._last)
+                self._cancel_autoconnect()
+                with self._action_lock:
+                    self.cfg.autoconnect = not self.cfg.autoconnect
+                    if self.cfg.autoconnect:
+                        self._manual_disconnect = False
+                    self._save()
+                    self._refresh_icon(self._last)
             elif action == "quit":
                 self.quit()
                 return  # icon is stopping; no refresh
@@ -374,7 +394,8 @@ class TrayApp:
         snap = self._last
         # Per-room rows only when the mix can actually differ; a single
         # device (or stereo pair endpoint) keeps the classic one-slider UI.
-        device_rows = list(snap.volumes) if len(snap.selected) >= 2 else []
+        row_identifiers = {snap.device_label(identifier): identifier for identifier, _ in snap.volumes}
+        device_rows = [(snap.device_label(identifier), volume) for identifier, volume in snap.volumes] if len(snap.selected) >= 2 else []
         initial = snap.volume
         if len(snap.selected) == 1 and snap.volumes:
             # Single device: show ITS effective level - the master could be
@@ -392,8 +413,9 @@ class TrayApp:
             self.engine.set_volume_nowait(v)
 
         def send_device(name: str, v: float) -> None:
-            sent_log.append((name, float(v)))
-            self.engine.set_device_volume_nowait(name, v)
+            identifier = row_identifiers[name]
+            sent_log.append((identifier, float(v)))
+            self.engine.set_device_volume_nowait(identifier, v)
 
         def run() -> None:
             try:
@@ -408,25 +430,28 @@ class TrayApp:
             except Exception:  # noqa: BLE001 - a broken popup must not kill the tray
                 logger.exception("volume slider failed")
             finally:
-                self._slider_open.clear()
                 try:
                     if sent_log:
                         # Replay in send order so master-vs-device precedence
                         # matches what the engine actually ended up with
                         # (master clears all overrides).
-                        volume = self.cfg.volume
-                        overrides = dict(self.cfg.device_volumes)
-                        for name, v in sent_log:
-                            v = max(0.0, min(100.0, v))
-                            if name is None:  # master: sets all, clears overrides
-                                volume, overrides = v, {}
-                            else:
-                                overrides[name] = v
-                        self.cfg.volume = volume
-                        self.cfg.device_volumes = overrides
-                        self._save()
+                        with self._action_lock:
+                            volume = self.cfg.volume
+                            overrides = dict(self.cfg.device_volumes)
+                            for name, v in sent_log:
+                                v = max(0.0, min(100.0, v))
+                                if name is None:  # master: sets all, clears overrides
+                                    volume, overrides = v, {}
+                                    self.cfg.legacy_device_volumes.clear()
+                                else:
+                                    overrides[name] = v
+                            self.cfg.volume = volume
+                            self.cfg.device_volumes = overrides
+                            self._save()
                 except Exception:  # noqa: BLE001 - engine may be shut down
                     pass
+                finally:
+                    self._slider_open.clear()
 
         self._slider_thread = threading.Thread(
             target=run, name="volume-slider", daemon=True
@@ -439,18 +464,38 @@ class TrayApp:
         # against the HMENU being displayed (the v0.5.0 crash class). The
         # pre-display refresh in run() makes an explicit rebuild unnecessary.
         icon.visible = True
+        cancel = self._autoconnect_cancel
         try:
             snap = self.engine.rescan()
-            if self.cfg.devices:
-                snap = self.engine.set_selected(self.cfg.devices)
-            self._refresh_icon(snap)
+            with self._action_lock:
+                if not cancel.is_set() and not self._quitting.is_set():
+                    snap = self._restore_saved_selection(snap)
+                    self._refresh_icon(snap)
         except Exception:  # noqa: BLE001
             logger.exception("startup scan failed")
-        if self.cfg.autoconnect and self.cfg.devices:
+        if not cancel.is_set() and self.cfg.autoconnect and (self.cfg.devices or self.cfg.legacy_devices):
             self._autoconnect_with_retry()
         threading.Thread(
             target=self._watch_for_resume, name="resume-watch", daemon=True
         ).start()
+
+    def _cancel_autoconnect(self) -> None:
+        self._autoconnect_cancel.set()
+
+    def _rescan_devices(self) -> None:
+        try:
+            self.engine.rescan()
+        except Exception:  # noqa: BLE001 - background action must not crash
+            logger.exception("device scan failed")
+
+    def _restore_saved_selection(self, snap: Snapshot) -> Snapshot:
+        previous_volumes = dict(self.cfg.device_volumes)
+        if self.cfg.resolve_legacy(snap.devices):
+            for identifier, volume in self.cfg.device_volumes.items():
+                if previous_volumes.get(identifier) != volume:
+                    self.engine.set_device_volume(identifier, volume)
+            self._save()
+        return self.engine.set_selected(self.cfg.devices)
 
     def _autoconnect_with_retry(self, attempts: int = 12, delay: float = 10.0) -> None:
         """Keep trying to connect at launch until the network is ready.
@@ -460,26 +505,42 @@ class TrayApp:
         once a session starts, the per-device watchdogs take over.
         """
 
+        with self._action_lock:
+            if self._quitting.is_set() or self._manual_disconnect or not self.cfg.autoconnect:
+                return
+            self._cancel_autoconnect()
+            cancel = self._autoconnect_cancel = threading.Event()
+
+        def cancelled() -> bool:
+            return cancel.is_set() or self._quitting.is_set()
+
         def run() -> None:
             for attempt in range(attempts):
-                if self._quitting.is_set():
+                if cancelled():
                     return
                 try:
                     snap = self.engine.rescan()
-                    if self.cfg.devices:
-                        snap = self.engine.set_selected(self.cfg.devices)
-                    if {d.name for d in snap.devices}.intersection(snap.selected):
-                        self.engine.start_selected()
-                    if self.engine.snapshot().state is not EngineState.IDLE:
-                        logger.info("auto-connect succeeded on attempt %d", attempt + 1)
-                        return
+                    with self._action_lock:
+                        if cancelled() or not self.cfg.autoconnect or self._manual_disconnect:
+                            return
+                        if self.engine.snapshot().state is not EngineState.IDLE:
+                            return  # a manual connect already started a session
+                        snap = self._restore_saved_selection(snap)
+                        if cancelled():
+                            return
+                        if {d.identifier for d in snap.devices}.intersection(snap.selected):
+                            self.engine.start_selected()
+                        if self.engine.snapshot().state is not EngineState.IDLE:
+                            logger.info("auto-connect succeeded on attempt %d", attempt + 1)
+                            return
                 except Exception:  # noqa: BLE001
                     logger.exception("auto-connect attempt %d failed", attempt + 1)
-                if self._quitting.wait(delay):
+                if cancel.wait(delay) or self._quitting.is_set():
                     return
             logger.warning("auto-connect gave up after %d attempts", attempts)
 
-        threading.Thread(target=run, name="auto-connect", daemon=True).start()
+        self._autoconnect_thread = threading.Thread(target=run, name="auto-connect", daemon=True)
+        self._autoconnect_thread.start()
 
     def run(self) -> int:
         import pystray
@@ -560,27 +621,38 @@ class TrayApp:
                 "system resumed after ~%.0fs suspended; restarting session", drift
             )
             try:
-                if self.engine.snapshot().state is not EngineState.IDLE:
-                    self.engine.stop_streaming()
-                    self.engine.start_selected()
-                elif self.cfg.autoconnect and self.cfg.devices:
-                    self._autoconnect_with_retry()
+                with self._action_lock:
+                    if self._quitting.is_set() or self._manual_disconnect:
+                        continue
+                    if self.engine.snapshot().state is not EngineState.IDLE:
+                        self.engine.stop_streaming()
+                        self.engine.start_selected()
+                    elif self.cfg.autoconnect and (self.cfg.devices or self.cfg.legacy_devices):
+                        self._autoconnect_with_retry()
             except Exception:  # noqa: BLE001 - never kill the watcher
                 logger.exception("reconnect after resume failed")
 
     def quit(self) -> None:
+        from .volume_slider import shutdown_slider
+
         self._quitting.set()
+        self._cancel_autoconnect()
         try:
-            self.engine.shutdown()
+            # Flush pending volume changes while the engine is still alive;
+            # Tk and its interpreter are released on their owning thread.
+            shutdown_slider()
+        except Exception:  # noqa: BLE001 - finish other cleanup on UI failure
+            logger.exception("volume UI shutdown failed")
         finally:
-            if self.icon is not None:
-                self.icon.stop()
-            # Let the flyout's _pump see _quitting and destroy its Tk before
-            # interpreter finalization tears it down from the wrong thread
-            # (the Tcl_AsyncDelete crash-at-exit).
             thread = self._slider_thread
             if thread is not None and thread.is_alive():
-                thread.join(timeout=2)
+                thread.join(timeout=5)  # save the final popup values
+            try:
+                with self._action_lock:
+                    self.engine.shutdown()
+            finally:
+                if self.icon is not None:
+                    self.icon.stop()
 
 
 def _already_running_dialog() -> None:
@@ -613,45 +685,13 @@ def run_tray() -> int:
     if not guard.acquire():
         _already_running_dialog()
         return 1
-    app = TrayApp()
-    code = 0
+    app = None
     try:
-        code = app.run()
+        app = TrayApp()
+        return app.run()
     finally:
         try:
-            app.engine.shutdown()
-        except Exception:  # noqa: BLE001
-            pass
-        guard.release()
-        _exit_without_finalizers(code)
-    return code
-
-
-def _exit_without_finalizers(code: int) -> int:
-    """End the process without running interpreter finalization.
-
-    A volume flyout leaves a dormant Tk interpreter behind (see
-    volume_slider._RETIRED - it must not be garbage collected off its
-    creating thread). At interpreter shutdown Python would finalize it from
-    the main thread, and Tcl responds to that by panicking, turning a clean
-    quit into a crash. Everything that matters - config, logs, the RAOP
-    sessions - has already been flushed by this point.
-    """
-    import logging as _logging
-
-    if not _RETIRED_TK():
-        return code  # no Tk was ever created; exit normally
-    try:
-        _logging.shutdown()
-    except Exception:  # noqa: BLE001
-        pass
-    os._exit(code)
-
-
-def _RETIRED_TK() -> bool:
-    try:
-        from .volume_slider import _RETIRED
-
-        return bool(_RETIRED)
-    except Exception:  # noqa: BLE001
-        return False
+            if app is not None:
+                app.quit()
+        finally:
+            guard.release()

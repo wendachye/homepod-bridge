@@ -126,6 +126,27 @@ class PcmPipe:
     the engine can build either.
     """
 
+    @classmethod
+    def live(
+        cls,
+        sample_rate: int,
+        channels: int,
+        sample_width: int = 2,
+        *,
+        buffer_seconds: float = 0.4,
+        prime_seconds: float = 0.05,
+    ) -> "PcmPipe":
+        """Create the same frame-aligned live stream for CLI and tray."""
+        frame = channels * sample_width
+        capacity = max(64 * 1024, int(sample_rate * frame * buffer_seconds))
+        return cls(
+            sample_rate,
+            channels,
+            sample_width,
+            buffer=StreamBuffer(max_bytes=capacity, align=frame),
+            prime_seconds=prime_seconds,
+        )
+
     def __init__(
         self,
         sample_rate: int,

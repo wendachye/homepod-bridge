@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.12.1"
 description = "Stream Windows system audio to HomePods over AirPlay - an open TuneBlade alternative."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Wenda Chye" }]
 keywords = ["airplay", "homepod", "raop", "wasapi", "loopback", "audio", "streaming"]
 classifiers = [
@@ -20,7 +21,7 @@ classifiers = [
   "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
-  "pyatv>=0.16,<0.19",
+  "pyatv>=0.18,<0.19",
   "lameenc>=1.6",
   "pystray>=0.19",
   "Pillow>=10",

@@ -114,24 +114,24 @@ def test_full_lifecycle(env):
     assert len(snap.devices) == 3
     assert snap.state is EngineState.IDLE
 
-    engine.set_selected(["Living Room", "Living Room (2)"])
+    engine.set_selected(["id-Living Room", "id-Living Room (2)"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
     snap = engine.snapshot()
-    assert snap.connected == ("Living Room", "Living Room (2)")
+    assert snap.connected == ("id-Living Room", "id-Living Room (2)")
     assert captures[0].started and not captures[0].stopped
 
     snap = engine.stop_streaming()
     assert snap.state is EngineState.IDLE
     assert snap.connected == ()
     assert captures[0].stopped
-    assert snap.selected == ("Living Room", "Living Room (2)")  # selection survives
+    assert snap.selected == ("id-Living Room", "id-Living Room (2)")  # selection survives
 
 
 def test_volume_applied_on_connect_and_on_change(env):
     engine, _ = env
     engine.rescan()
-    engine.set_selected(["Master Bedroom"])
+    engine.set_selected(["id-Master Bedroom"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
 
@@ -150,21 +150,21 @@ def test_volume_applied_on_connect_and_on_change(env):
 def test_toggle_while_streaming_restarts_session(env):
     engine, captures = env
     engine.rescan()
-    engine.set_selected(["Living Room"])
+    engine.set_selected(["id-Living Room"])
     engine.start_selected()
-    assert wait_until(lambda: engine.snapshot().connected == ("Living Room",))
+    assert wait_until(lambda: engine.snapshot().connected == ("id-Living Room",))
 
-    snap = engine.toggle_device("Living Room (2)")
-    assert set(snap.selected) == {"Living Room", "Living Room (2)"}
+    snap = engine.toggle_device("id-Living Room (2)")
+    assert set(snap.selected) == {"id-Living Room", "id-Living Room (2)"}
     assert wait_until(
-        lambda: engine.snapshot().connected == ("Living Room", "Living Room (2)")
+        lambda: engine.snapshot().connected == ("id-Living Room", "id-Living Room (2)")
     )
     assert len(captures) == 2  # old session torn down, new capture created
     assert captures[0].stopped and captures[1].started
 
     # toggling the last device off ends the session entirely
-    engine.toggle_device("Living Room")
-    snap = engine.toggle_device("Living Room (2)")
+    engine.toggle_device("id-Living Room")
+    snap = engine.toggle_device("id-Living Room (2)")
     assert snap.selected == ()
     assert snap.state is EngineState.IDLE
     assert captures[-1].stopped
@@ -173,8 +173,8 @@ def test_toggle_while_streaming_restarts_session(env):
 def test_toggle_while_idle_only_updates_selection(env):
     engine, captures = env
     engine.rescan()
-    snap = engine.toggle_device("Master Bedroom")
-    assert snap.selected == ("Master Bedroom",)
+    snap = engine.toggle_device("id-Master Bedroom")
+    assert snap.selected == ("id-Master Bedroom",)
     assert snap.state is EngineState.IDLE
     assert captures == []  # nothing started
 
@@ -195,7 +195,7 @@ def test_on_change_fires_with_snapshots():
     )
     try:
         engine.rescan()
-        engine.set_selected(["Living Room"])
+        engine.set_selected(["id-Living Room"])
         engine.start_selected()
         assert wait_until(lambda: any(s.state is EngineState.STREAMING for s in seen))
         engine.stop_streaming()
@@ -216,11 +216,11 @@ def test_device_volume_override_applied_on_connect():
         capture_factory=FakeCapture,
         encoder_factory=lambda fmt: FakeEncoder(),
         volume=40.0,
-        device_volumes={"Living Room": 20.0},
+        device_volumes={"id-Living Room": 20.0},
     )
     try:
         engine.rescan()
-        engine.set_selected(["Living Room", "Living Room (2)"])
+        engine.set_selected(["id-Living Room", "id-Living Room (2)"])
         engine.start_selected()
         assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
         lr = fake_stream.atvs["id-Living Room"][0]
@@ -228,7 +228,7 @@ def test_device_volume_override_applied_on_connect():
         assert wait_until(lambda: lr.levels[:1] == [20.0])  # its own override
         assert wait_until(lambda: lr2.levels[:1] == [40.0])  # master default
         snap = engine.snapshot()
-        assert snap.volumes == (("Living Room", 20.0), ("Living Room (2)", 40.0))
+        assert snap.volumes == (("id-Living Room", 20.0), ("id-Living Room (2)", 40.0))
         assert snap.volume == 40.0  # master untouched by the override
     finally:
         engine.shutdown()
@@ -249,22 +249,22 @@ def test_set_device_volume_targets_only_that_device():
     )
     try:
         engine.rescan()
-        engine.set_selected(["Living Room", "Living Room (2)"])
+        engine.set_selected(["id-Living Room", "id-Living Room (2)"])
         engine.start_selected()
         assert wait_until(lambda: engine.snapshot().connected != ())
         lr = fake_stream.atvs["id-Living Room"][0]
         lr2 = fake_stream.atvs["id-Living Room (2)"][0]
         assert wait_until(lambda: lr.levels and lr2.levels)
 
-        snap = engine.set_device_volume("Living Room", 65.0)
+        snap = engine.set_device_volume("id-Living Room", 65.0)
         assert lr.levels[-1] == 65.0
         assert lr2.levels[-1] == 40.0  # untouched
-        assert snap.volumes == (("Living Room", 65.0), ("Living Room (2)", 40.0))
+        assert snap.volumes == (("id-Living Room", 65.0), ("id-Living Room (2)", 40.0))
 
         # Master afterwards: sets EVERYTHING and clears the override.
         snap = engine.set_volume(80.0)
         assert lr.levels[-1] == 80.0 and lr2.levels[-1] == 80.0
-        assert snap.volumes == (("Living Room", 80.0), ("Living Room (2)", 80.0))
+        assert snap.volumes == (("id-Living Room", 80.0), ("id-Living Room (2)", 80.0))
     finally:
         engine.shutdown()
 
@@ -274,7 +274,7 @@ def test_overlapping_volume_sends_land_in_submission_order(env):
     one - the per-device worker drains to the LATEST queued value."""
     engine, _captures = env
     engine.rescan()
-    engine.set_selected(["Master Bedroom"])
+    engine.set_selected(["id-Master Bedroom"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
     atv = fake_stream.atvs["id-Master Bedroom"][0]
@@ -289,8 +289,8 @@ def test_overlapping_volume_sends_land_in_submission_order(env):
             self._sink.append(level)
 
     atv.audio = SlowAudio(atv.levels)
-    engine.set_device_volume_nowait("Master Bedroom", 30.0)
-    engine.set_device_volume_nowait("Master Bedroom", 80.0)
+    engine.set_device_volume_nowait("id-Master Bedroom", 30.0)
+    engine.set_device_volume_nowait("id-Master Bedroom", 80.0)
     assert wait_until(lambda: 80.0 in atv.levels)
     time.sleep(0.15)  # give any straggler a chance to land out of order
     assert atv.levels[-1] == 80.0
@@ -330,12 +330,12 @@ def test_live_buffer_is_latency_bounded_not_memory_bounded(env):
 
     engine, _ = env  # default bitrate: 320kbps
     engine.rescan()
-    engine.set_selected(["Living Room"])
+    engine.set_selected(["id-Living Room"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
 
     byte_rate = 320_000 // 8
-    pipe = engine._pipes["Living Room"]
+    pipe = engine._pipes["id-Living Room"]
     # seconds-of-audio bound, with a 64KiB floor so the buffer can always
     # satisfy pyatv's decoder-init read
     cap = max(64 * 1024, int(byte_rate * engine_mod.LIVE_BUFFER_SECONDS))
@@ -356,7 +356,7 @@ def test_reconnect_repushes_volume_after_hung_apply(env):
     pyatv's default while the UI reports the user's level."""
     engine, _ = env
     engine.rescan()
-    engine.set_selected(["Master Bedroom"])
+    engine.set_selected(["id-Master Bedroom"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
     atv1 = fake_stream.atvs["id-Master Bedroom"][0]
@@ -377,14 +377,14 @@ def test_reconnect_repushes_volume_after_hung_apply(env):
     atv1.audio = hung
     # Same level as already effective: the reconnect will re-queue this
     # exact value, which a value-only done-check would treat as delivered.
-    engine.set_device_volume_nowait("Master Bedroom", 40.0)
+    engine.set_device_volume_nowait("id-Master Bedroom", 40.0)
     assert wait_until(lambda: hung.calls == [40.0])  # apply is now hanging
 
     on_event = fake_stream.events["id-Master Bedroom"]
     atv2 = FakeAtv()
     engine._loop.call_soon_threadsafe(on_event, "disconnected", None)
     engine._loop.call_soon_threadsafe(on_event, "connected", atv2)
-    assert wait_until(lambda: engine.snapshot().connected == ("Master Bedroom",))
+    assert wait_until(lambda: engine.snapshot().connected == ("id-Master Bedroom",))
     engine._loop.call_soon_threadsafe(lambda: hung.gate.set())  # stale apply ends
 
     assert wait_until(lambda: atv2.levels == [40.0])  # fresh session got it
@@ -397,7 +397,7 @@ def test_blocking_volume_call_survives_concurrent_stop(env):
 
     engine, _ = env
     engine.rescan()
-    engine.set_selected(["Master Bedroom"])
+    engine.set_selected(["id-Master Bedroom"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
     atv = fake_stream.atvs["id-Master Bedroom"][0]
@@ -462,7 +462,7 @@ def test_stop_survives_capture_stop_failure():
     engine = make_engine(factory)
     try:
         engine.rescan()
-        engine.set_selected(["Living Room"])
+        engine.set_selected(["id-Living Room"])
         engine.start_selected()
         assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
 
@@ -488,7 +488,7 @@ def test_failed_capture_start_cleans_up_and_next_connect_works():
     engine = make_engine(factory)
     try:
         engine.rescan()
-        engine.set_selected(["Living Room"])
+        engine.set_selected(["id-Living Room"])
         with pytest.raises(RuntimeError, match="device busy"):
             engine.start_selected()
         assert engine.snapshot().state is EngineState.IDLE
@@ -512,7 +512,7 @@ def test_surround_output_is_rejected_with_alert():
     engine = make_engine(factory, on_alert=alerts.append)
     try:
         engine.rescan()
-        engine.set_selected(["Living Room"])
+        engine.set_selected(["id-Living Room"])
         snap = engine.start_selected()
         assert snap.state is EngineState.IDLE  # rejected cleanly, no flapping
         assert captures[0].stopped
@@ -524,9 +524,114 @@ def test_surround_output_is_rejected_with_alert():
 def test_shutdown_stops_loop_thread(env):
     engine, _ = env
     engine.rescan()
-    engine.set_selected(["Living Room"])
+    engine.set_selected(["id-Living Room"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
     engine.shutdown()
     assert not engine._thread.is_alive()
     engine.shutdown()  # idempotent
+
+
+def test_duplicate_names_keep_selection_streams_and_volume_isolated():
+    from dataclasses import replace
+
+    fake_stream.atvs = {}
+    first = replace(dev("Bedroom"), identifier="speaker-1", address="10.0.0.1")
+    second = replace(dev("Bedroom"), identifier="speaker-2", address="10.0.0.2")
+    devices = [first, second]
+
+    async def scan_fn(timeout=6):
+        return list(devices)
+
+    engine = BridgeEngine(scan_fn=scan_fn, stream_fn=fake_stream,
+                          capture_factory=FakeCapture,
+                          encoder_factory=lambda fmt: FakeEncoder(),
+                          device_volumes={"speaker-1": 20.0, "speaker-2": 70.0})
+    try:
+        engine.rescan()
+        engine.set_selected(["speaker-1"])
+        engine.start_selected()
+        assert wait_until(lambda: engine.snapshot().connected == ("speaker-1",))
+        assert set(fake_stream.atvs) == {"speaker-1"}
+
+        engine.set_selected(["speaker-1", "speaker-2", "speaker-1"])
+        assert wait_until(lambda: engine.snapshot().connected == ("speaker-1", "speaker-2"))
+        assert set(engine._pipes) == {"speaker-1", "speaker-2"}
+        assert engine._pipes["speaker-1"] is not engine._pipes["speaker-2"]
+        assert engine.snapshot().volumes == (("speaker-1", 20.0), ("speaker-2", 70.0))
+        first_atv, second_atv = fake_stream.atvs["speaker-1"][-1], fake_stream.atvs["speaker-2"][-1]
+        assert wait_until(lambda: first_atv.levels and second_atv.levels)
+        engine.set_device_volume("speaker-1", 35.0)
+        assert first_atv.levels[-1] == 35.0 and second_atv.levels[-1] == 70.0
+
+        # Device identity survives renames and changes in discovery order.
+        devices[:] = [second, replace(first, name="Guest Bedroom")]
+        snap = engine.rescan()
+        assert snap.selected == ("speaker-1", "speaker-2")
+        assert snap.device_label("speaker-1") == "Guest Bedroom"
+        assert snap.volumes == (("speaker-1", 35.0), ("speaker-2", 70.0))
+    finally:
+        engine.shutdown()
+
+
+def test_missing_identifier_never_falls_back_to_a_matching_display_name(env):
+    engine, captures = env
+    engine.rescan()
+    engine.set_selected(["Living Room"])
+    assert engine.start_selected().state is EngineState.IDLE
+    assert captures == []
+
+
+def test_shutdown_cancels_an_inflight_scan():
+    import concurrent.futures
+    import threading
+
+    scanning = threading.Event()
+    cancelled = threading.Event()
+
+    async def slow_scan(timeout=6):
+        scanning.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    engine = BridgeEngine(scan_fn=slow_scan)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        pending = executor.submit(engine.rescan)
+        assert scanning.wait(2)
+        engine.shutdown()
+        assert cancelled.is_set()
+        with pytest.raises(concurrent.futures.CancelledError):
+            pending.result(timeout=2)
+
+
+def test_slow_old_scan_does_not_overwrite_newer_discovery():
+    import concurrent.futures
+    import threading
+
+    scanning = threading.Event()
+    release = None
+    calls = 0
+
+    async def scanner(timeout=6):
+        nonlocal calls, release
+        calls += 1
+        if calls == 1:
+            release = asyncio.Event()
+            scanning.set()
+            await release.wait()
+            return [dev("Old name")]
+        return [dev("New name")]
+
+    engine = BridgeEngine(scan_fn=scanner)
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            old_scan = executor.submit(engine.rescan)
+            assert scanning.wait(2)
+            assert engine.rescan().devices[0].name == "New name"
+            engine._loop.call_soon_threadsafe(release.set)
+            assert old_scan.result(timeout=2).devices[0].name == "New name"
+            assert engine.snapshot().devices[0].name == "New name"
+    finally:
+        engine.shutdown()

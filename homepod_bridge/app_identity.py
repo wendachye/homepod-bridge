@@ -295,10 +295,11 @@ def ensure_windows_identity() -> bool:
     if lnk is None:
         return False
     try:
-        if read_shortcut_aumid(lnk) == APP_AUMID:
-            return True  # already registered
         from .config import default_config_path
 
+        # An existing AUMID says nothing about its launch target. Refresh
+        # our shortcut so relocating the app or replacing Python cannot
+        # leave Start Menu search pointing at the previous installation.
         icon = write_app_icon(default_config_path().parent / "app.ico")
         target, arguments, workdir = _launch_command()
         write_shortcut(

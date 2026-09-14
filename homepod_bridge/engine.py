@@ -75,11 +75,33 @@ class EngineState(str, Enum):
 class Snapshot:
     state: EngineState
     devices: Tuple[DeviceInfo, ...]  # streamable devices from last scan
-    selected: Tuple[str, ...]  # device names chosen by the user
-    connected: Tuple[str, ...]  # device names with a live RAOP session
+    selected: Tuple[str, ...]  # stable device identifiers chosen by the user
+    connected: Tuple[str, ...]  # stable identifiers with a live RAOP session
     volume: float  # master volume (also the default for devices w/o override)
     capture_restarts: int = 0  # sessions auto-restarted after capture death
-    volumes: Tuple[Tuple[str, float], ...] = ()  # (name, effective) per selected
+    volumes: Tuple[Tuple[str, float], ...] = ()  # (identifier, effective) per selected
+
+    def device_labels(self) -> Dict[str, str]:
+        """Friendly, unique labels; identities remain independent of names."""
+        counts = collections.Counter(d.name for d in self.devices)
+        labels = {
+            d.identifier: d.name if counts[d.name] == 1 else f"{d.name} ({d.address})"
+            for d in self.devices
+        }
+        for identifier in self.selected + self.connected:
+            labels.setdefault(identifier, identifier)
+        # Include offline selections and handle names that already look
+        # like generated labels, so popup callbacks always map one-to-one.
+        while len(set(labels.values())) != len(labels):
+            collisions = collections.Counter(labels.values())
+            labels = {
+                identifier: label if collisions[label] == 1 else f"{label} [{identifier}]"
+                for identifier, label in labels.items()
+            }
+        return labels
+
+    def device_label(self, identifier: str) -> str:
+        return self.device_labels().get(identifier, identifier)
 
 
 class BridgeEngine:
@@ -117,6 +139,7 @@ class BridgeEngine:
         self._volume_tasks: Dict[str, asyncio.Task] = {}
 
         self._devices: List[DeviceInfo] = []
+        self._scan_generation = 0
         self._selected: List[str] = []
         self._connected: set = set()
         self._atvs: Dict[str, object] = {}
@@ -129,6 +152,7 @@ class BridgeEngine:
         self._state = EngineState.IDLE
         self._restart_times: collections.deque = collections.deque(maxlen=16)
         self._capture_restarts = 0
+        self._capture_generation = 0
         # Serializes session mutations (user start/stop/reselect vs capture
         # recovery): without it, a recovery restart interleaving with a user
         # Disconnect could rebuild the session AFTER the user stopped it.
@@ -164,8 +188,8 @@ class BridgeEngine:
     def rescan(self, timeout: int = 6) -> Snapshot:
         return self._call(self._rescan(timeout))
 
-    def set_selected(self, names: Sequence[str]) -> Snapshot:
-        return self._call(self._set_selected(list(names)))
+    def set_selected(self, identifiers: Sequence[str]) -> Snapshot:
+        return self._call(self._set_selected(list(dict.fromkeys(identifiers))))
 
     def toggle_device(self, name: str) -> Snapshot:
         return self._call(self._toggle(name))
@@ -205,7 +229,7 @@ class BridgeEngine:
         if not self._thread.is_alive():
             return
         try:
-            self._call(self._locked_stop())
+            self._call(self._shutdown_tasks())
         except Exception:  # noqa: BLE001 - shutdown must not raise
             logger.exception("error stopping session during shutdown")
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -248,9 +272,21 @@ class BridgeEngine:
         return self._make_snapshot()
 
     async def _rescan(self, timeout: int) -> Snapshot:
-        self._devices = await self._scan_fn(timeout=timeout)
-        self._notify()
+        self._scan_generation += 1
+        generation = self._scan_generation
+        devices = await self._scan_fn(timeout=timeout)
+        if generation == self._scan_generation:
+            self._devices = devices
+            self._notify()
         return self._make_snapshot()
+
+    async def _shutdown_tasks(self) -> None:
+        await self._locked_stop()
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _user_start(self) -> Snapshot:
         async with self._session_lock:
@@ -262,35 +298,40 @@ class BridgeEngine:
 
     async def _set_selected(self, names: List[str]) -> Snapshot:
         async with self._session_lock:
-            if self._session is not None:
-                self._restart_times.clear()  # user-initiated restart
-                return await self._start(names)
-            self._selected = names
-            self._notify()
-            return self._make_snapshot()
+            return await self._set_selected_locked(names)
+
+    async def _set_selected_locked(self, identifiers: List[str]) -> Snapshot:
+        if self._session is not None:
+            self._restart_times.clear()  # user-initiated restart
+            return await self._start(identifiers)
+        self._selected = identifiers
+        self._notify()
+        return self._make_snapshot()
 
     async def _toggle(self, name: str) -> Snapshot:
-        sel = list(self._selected)
-        if name in sel:
-            sel.remove(name)
-        else:
-            sel.append(name)
-        return await self._set_selected(sel)
+        async with self._session_lock:
+            sel = list(self._selected)
+            if name in sel:
+                sel.remove(name)
+            else:
+                sel.append(name)
+            return await self._set_selected_locked(sel)
 
     async def _start(self, names: List[str]) -> Snapshot:
         await self._stop_session()
         self._selected = names
-        available = {d.name: d for d in self._devices if d.streamable}
+        available = {d.identifier: d for d in self._devices if d.streamable}
         targets = [available[n] for n in names if n in available]
         if not targets:
             self._notify()
             return self._make_snapshot()
 
-        self._switches = {t.name: SinkSwitch() for t in targets}
+        self._switches = {t.identifier: SinkSwitch() for t in targets}
+        generation = self._capture_generation
         try:
             self._capture = self._capture_factory(
                 FanOutSink(list(self._switches.values())),
-                on_failure=self._capture_failure,
+                on_failure=lambda: self._capture_failure(generation),
             )
             self._capture.start()
         except Exception:
@@ -330,7 +371,7 @@ class BridgeEngine:
                 policy=RetryPolicy(),
                 stop_event=self._stop_evt,
                 stats=StreamStats(),
-                on_event=self._make_on_event(t.name),
+                on_event=self._make_on_event(t.identifier),
             )
             for t in targets
         ]
@@ -368,20 +409,22 @@ class BridgeEngine:
         except Exception:  # noqa: BLE001 - sync polish must never break audio
             logger.debug("device resync stopped", exc_info=True)
 
-    def _capture_failure(self) -> None:
+    def _capture_failure(self, generation: int) -> None:
         """Called from the capture thread when its read loop dies."""
         try:
             self._loop.call_soon_threadsafe(
-                lambda: self._loop.create_task(self._recover_capture())
+                lambda: self._loop.create_task(self._recover_capture(generation))
             )
         except RuntimeError:
             pass  # loop already stopped during shutdown
 
-    async def _recover_capture(self) -> None:
+    async def _recover_capture(self, generation: int) -> None:
         """Restart the session with a fresh capture (re-detects the output
         device - covers sleep/resume and device changes). Rapid repeated
         failures stop the session instead of restart-looping forever."""
         async with self._session_lock:
+            if generation != self._capture_generation:
+                return  # a delayed callback from a replaced capture
             await self._recover_capture_locked()
 
     async def _recover_capture_locked(self) -> None:
@@ -449,14 +492,11 @@ class BridgeEngine:
         cap = self._live_buffer_bytes(fmt)
         if self._encoder_factory is not None:
             return Mp3Pipe(self._encoder_factory(fmt), buffer=StreamBuffer(max_bytes=cap))
-        # align: dropping a partial frame from raw PCM would shift the
-        # channel interleave for the rest of the session.
-        buffer = StreamBuffer(max_bytes=cap, align=fmt.channels * fmt.sample_width)
-        return PcmPipe(
+        return PcmPipe.live(
             fmt.sample_rate,
             fmt.channels,
             fmt.sample_width,
-            buffer=buffer,
+            buffer_seconds=LIVE_BUFFER_SECONDS,
             # Every device starts its stream the same distance from live,
             # whenever it happens to connect - the receiver's playback
             # schedule is fixed from where the stream began.
@@ -465,7 +505,7 @@ class BridgeEngine:
 
     def _make_open_reader(self, target: DeviceInfo, fmt):
         def open_reader():
-            old = self._pipes.get(target.name)
+            old = self._pipes.get(target.identifier)
             if old is not None:
                 old.finish()
             pipe = self._make_pipe(fmt)
@@ -476,8 +516,8 @@ class BridgeEngine:
                 # through the 10s stop timeout.
                 pipe.finish()
             else:
-                self._switches[target.name].set(pipe.feed_pcm)
-                self._pipes[target.name] = pipe
+                self._switches[target.identifier].set(pipe.feed_pcm)
+                self._pipes[target.identifier] = pipe
             return pipe.reader()
 
         return open_reader
@@ -598,6 +638,7 @@ class BridgeEngine:
             logger.exception("capture stop failed")
 
     async def _stop_session(self) -> None:
+        self._capture_generation += 1
         capture, self._capture = self._capture, None
         if self._session is None:
             self._state = EngineState.IDLE

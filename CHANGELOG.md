@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased - reliability and release validation
+- CLI capture failures during startup discovery are retained and cause a
+  clean error exit; failed capture starts release their resources.
+- Short no-frame gaps preserve the PCM sample timeline without injecting
+  phantom silence during normal WASAPI packet jitter.
+- Tray selections and room volumes use stable device IDs. Unique saved
+  names migrate; ambiguous old names require selecting the intended device.
+- Disconnect, disabling auto-connect, and Quit cancel pending launch
+  retries; manually disconnected sessions stay idle across sleep/resume.
+- Failed AirPlay sessions update their state and close before retry backoff.
+- The volume popup shares one persistent Tk owner, releases each closed
+  popup, and shuts down normally without permanent interpreter retention
+  or `os._exit`. Canceled master drags preserve per-room overrides.
+- Start Menu shortcuts refresh to the current installation path.
+- CLI and tray share frame-aligned live PCM pipe construction. CI now
+  includes Python 3.10 and locked Windows wheel/EXE build smoke checks;
+  real hardware release validation is documented separately.
+
 ## 0.12.1 - fix: silence forever after the display sleeps
 - The real cause of "it never reconnects after sleep". The machine had not
   actually suspended at all (verified: zero suspended time since boot). The

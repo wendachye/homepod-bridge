@@ -252,6 +252,8 @@ class LoopbackCapture:
         silence = b"\x00" * (CHUNK_FRAMES * self.fmt.channels * self.fmt.sample_width)
         now = time.monotonic()
         last_data = now  # last time the device handed us REAL frames
+        # End time of the next output chunk. Keep this sample clock across
+        # reads: resetting it to wall time loses every short silent gap.
         next_due = now + period
         while not self._stop.is_set():
             if self._device_changed:
@@ -262,13 +264,29 @@ class LoopbackCapture:
                 # frames while the machine is silent, so a blocking read
                 # would hang past stop()'s join timeout (forcing the leak
                 # path on every disconnect with audio paused).
-                if self._stream.get_read_available() >= CHUNK_FRAMES:
+                available = self._stream.get_read_available()
+                now = time.monotonic()
+                queued_seconds = available / float(self.fmt.sample_rate)
+                missing_seconds = now - (next_due - period) - queued_seconds
+                if missing_seconds > 1.0:
+                    # A suspended/stalled reader must not flood the sink
+                    # with historical silence. Preserve queued real audio,
+                    # and resume its timeline at the current wall clock.
+                    next_due = now + period - queued_seconds
+                    missing_seconds = 0.0
+                if available >= CHUNK_FRAMES and missing_seconds >= 2 * period:
+                    # Playback can resume before IDLE_GRACE_SECONDS. Fill
+                    # its missing time BEFORE the new audio, retaining one
+                    # chunk of timing slack for packet arrival jitter. The
+                    # queued frames above already cover elapsed time and
+                    # must never be replaced by additional silence.
+                    data = silence
+                    next_due += period
+                elif available >= CHUNK_FRAMES:
                     data = self._stream.read(CHUNK_FRAMES, exception_on_overflow=False)
-                    now = time.monotonic()
                     last_data = now
-                    next_due = now + period
+                    next_due += period
                 else:
-                    now = time.monotonic()
                     # WASAPI hands over 480-frame packets every 10ms, and 480
                     # does not divide CHUNK_FRAMES, so "no full chunk yet" is
                     # NORMAL mid-playback: reads land every 20-30ms around a
@@ -279,17 +297,16 @@ class LoopbackCapture:
                     # then continuous dropouts. Only a real gap in delivery
                     # means the machine has actually gone quiet.
                     idle = now - last_data >= IDLE_GRACE_SECONDS
-                    if not idle or now < next_due:
+                    due = next_due + queued_seconds
+                    if not idle or now < due:
                         self._stop.wait(
-                            0.005 if not idle else min(0.005, next_due - now)
+                            0.005 if not idle else min(0.005, due - now)
                         )
                         continue
                     # Genuine silence: feed silence at the capture rate, or
                     # the stream starves and the HomePod drops the session.
                     data = silence
                     next_due += period
-                    if now - next_due > 1.0:  # long stall: don't burst-catch-up
-                        next_due = now + period
                 # The sink chain (encoder -> buffer) must be inside the try:
                 # an escaping exception would kill this thread WITHOUT firing
                 # on_failure, silently ending audio while the tray stays green.

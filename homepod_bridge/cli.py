@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import threading
 from typing import Dict, List, Optional
 
 from .airplay import (
@@ -22,10 +23,8 @@ from .airplay import (
     scan_devices,
     stream_forever,
 )
-from .engine import LIVE_BUFFER_SECONDS
-from .mp3_pipe import FanOutSink, Mp3Pipe, SinkSwitch
+from .mp3_pipe import FanOutSink, SinkSwitch
 from .pcm_pipe import PcmPipe
-from .stream_buffer import StreamBuffer
 
 logger = logging.getLogger("homepod_bridge")
 
@@ -104,7 +103,7 @@ async def _run_stream(
         print(ACCESS_HINT)
         return 2
 
-    current: Dict[str, Mp3Pipe] = {}
+    current: Dict[str, PcmPipe] = {}
     stop = asyncio.Event()
     capture_died = {"flag": False}
     if failure_holder is not None:
@@ -120,23 +119,21 @@ async def _run_stream(
         # switch). The CLI has no restart machinery, so exit with a clear
         # error instead of hanging on readers that will never see data.
         failure_holder["notify"] = lambda: loop.call_soon_threadsafe(_capture_failed)
+        # Capture starts before discovery. Remember failures that happened
+        # before the event loop had a callback to receive them.
+        if failure_holder["failed"].is_set():
+            _capture_failed()
 
     def make_open_reader(target: DeviceInfo, switch: SinkSwitch):
         def open_reader():
-            # Fresh encoder + buffer per (re)connect => clean MP3 stream start,
-            # scoped to this device only; other sessions are untouched.
+            # Each reconnect starts a fresh WAV stream at the live edge.
             old = current.get(target.identifier)
             if old is not None:
                 old.finish()
-            byte_rate = fmt.sample_rate * fmt.channels * fmt.sample_width
-            live_cap = max(64 * 1024, int(byte_rate * LIVE_BUFFER_SECONDS))
-            # Raw PCM: pyatv sends PCM to the device anyway, and an MP3
-            # container adds ~1.6s of decoder-init stall.
-            pipe = PcmPipe(
+            pipe = PcmPipe.live(
                 fmt.sample_rate,
                 fmt.channels,
                 fmt.sample_width,
-                buffer=StreamBuffer(max_bytes=live_cap),
             )
             switch.set(pipe.feed_pcm)
             current[target.identifier] = pipe
@@ -146,25 +143,27 @@ async def _run_stream(
 
     stats = {t.identifier: StreamStats() for t in targets}
     names = ", ".join(f"'{t.name}'" for t in targets)
-    print(f"Streaming system audio to {names}. Ctrl+C to stop.")
+    if not stop.is_set():
+        print(f"Streaming system audio to {names}. Ctrl+C to stop.")
     if len(targets) > 1:
         print(
             "Note: multi-device sync is best-effort. Speakers in the same room may\n"
             "have a small audible offset; a Home-app stereo pair gives perfect sync."
         )
     try:
-        await asyncio.gather(
-            *(
-                stream_forever(
-                    t.identifier,
-                    make_open_reader(t, sw),
-                    RetryPolicy(),
-                    stop_event=stop,
-                    stats=stats[t.identifier],
+        if not stop.is_set():
+            await asyncio.gather(
+                *(
+                    stream_forever(
+                        t.identifier,
+                        make_open_reader(t, sw),
+                        RetryPolicy(),
+                        stop_event=stop,
+                        stats=stats[t.identifier],
+                    )
+                    for t, sw in zip(targets, switches)
                 )
-                for t, sw in zip(targets, switches)
             )
-        )
     finally:
         for pipe in current.values():
             pipe.finish()
@@ -195,36 +194,44 @@ def cmd_stream(args: argparse.Namespace) -> int:
     apply_raop_latency(args.latency)  # before any connection
 
     switches = [SinkSwitch() for _ in args.devices]
-    failure_holder: Dict[str, object] = {"notify": None}
+    failed = threading.Event()
+    failure_holder: Dict[str, object] = {
+        "notify": None,
+        "failed": failed,
+    }
 
     def on_capture_failure() -> None:
+        failed.set()
         notify = failure_holder.get("notify")
         if callable(notify):
             notify()
 
     try:
         capture = LoopbackCapture(FanOutSink(switches), on_failure=on_capture_failure)
-    except RuntimeError as exc:
+    except (OSError, RuntimeError) as exc:
         print(f"Error: {exc}")
         return 2
-    if capture.fmt.channels > 2:
-        # lameenc rejects >2 channels; without this gate the watchdog would
-        # flap reconnects forever with no audio and no clear error.
-        capture.stop()
-        print(
-            f"Error: the default output device is {capture.fmt.channels}-channel "
-            "(surround), which MP3 encoding does not support. Switch Windows "
-            "output to a stereo device and try again."
-        )
-        return 2
-    capture.start()
     try:
+        if capture.fmt.channels > 2:
+            print(
+                f"Error: the default output device is {capture.fmt.channels}-channel "
+                "(surround). Switch Windows output to a stereo device and try again."
+            )
+            return 2
+        capture.start()
         return asyncio.run(_run_stream(args, switches, capture.fmt, failure_holder))
     except KeyboardInterrupt:
         print("\nStopping.")
         return 0
+    except (OSError, RuntimeError) as exc:
+        print(f"Error: {exc}")
+        return 2
     finally:
-        capture.stop()
+        failure_holder["notify"] = None
+        try:
+            capture.stop()
+        except Exception:  # noqa: BLE001 - preserve the original result/error
+            logger.exception("audio capture cleanup failed")
 
 
 def main(argv: Optional[List[str]] = None) -> int:

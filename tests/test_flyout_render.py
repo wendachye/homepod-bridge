@@ -80,50 +80,82 @@ def test_close_flushes_pending_value(flyout):
     assert fw._closing
 
 
-def test_closed_flyout_is_retained_so_tcl_never_finalizes_cross_thread():
-    """The crash this prevents: pythonw.exe faulting in tcl86t.dll with
-    exception 0x80000003, killing the tray with no Python traceback.
+def test_windows_repeated_popups_share_one_interpreter_and_exit_normally():
+    """Exercise native Tcl teardown in a subprocess, with no forced os._exit.
 
-    Tk's interpreter must be deleted by its creating thread. The flyout runs
-    on a short-lived worker, so after that thread exits only a GC - on an
-    arbitrary thread - can finalize it, and Tcl panics. open_slider must
-    therefore leave a live reference behind rather than letting it become
-    collectable."""
-    import threading
+    Main-thread GC between worker-owned popups reproduced the original fatal
+    Tcl_AsyncDelete crash. The owner must now release every popup immediately
+    and finalize its single interpreter itself at shutdown.
+    """
+    import subprocess
+    import sys
+    import textwrap
 
-    tk = pytest.importorskip("tkinter")
-    from homepod_bridge import volume_slider
-    from homepod_bridge.volume_slider import FlyoutWindow, open_slider
+    if sys.platform != "win32":
+        pytest.skip("the production Tk worker is Windows-only")
+    pytest.importorskip("tkinter")
+    script = textwrap.dedent("""
+        import gc
+        import threading
+        import weakref
+        from homepod_bridge import volume_slider as slider
 
-    real_init = FlyoutWindow.__init__
-    started = threading.Event()
+        roots, windows, owners, released_on = [], [], [], []
+        opened = threading.Event()
+        auto_close = True
+        real_root = slider._new_root
+        real_window = slider.FlyoutWindow
 
-    def spy_init(self, *a, **kw):
-        real_init(self, *a, **kw)
-        started.set()
-        self.root.after(120, self.close)  # close promptly, as a user would
+        def new_root():
+            root = real_root()
+            roots.append(weakref.ref(root,
+                lambda ref: released_on.append(threading.get_ident())))
+            owners.append(threading.get_ident())
+            return root
 
-    before = len(volume_slider._RETIRED)
-    FlyoutWindow.__init__ = spy_init
-    try:
-        def run():
-            try:
-                open_slider(50.0, lambda v: None)
-            except tk.TclError:
-                pass  # no display
+        class Window(real_window):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                assert threading.get_ident() == owners[0]
+                windows.append(weakref.ref(self))
+                if auto_close:
+                    self.root.after(30, self.close)
+                opened.set()
 
-        t = threading.Thread(target=run)
-        t.start()
-        t.join(timeout=15)
-        assert not t.is_alive(), "open_slider did not return"
-        if not started.is_set():
-            pytest.skip("no display available for tkinter")
-        assert len(volume_slider._RETIRED) == before + 1
-        retained = volume_slider._RETIRED[-1]
-        assert retained.root is not None  # still referenced => never collected
-        assert retained._closing  # but the window itself was destroyed
-    finally:
-        FlyoutWindow.__init__ = real_init
+        slider._new_root = new_root
+        slider.FlyoutWindow = Window
+        try:
+            for _ in range(30):
+                slider.open_slider(50, lambda value: None,
+                    devices=[("Kitchen", 30), ("Bedroom", 70)])
+                assert all(ref() is None for ref in windows)
+                gc.collect()  # deliberately from the non-owning main thread
+            assert len(roots) == 1
+            assert owners[0] != threading.get_ident()
+
+            # Shutdown must also close a visible popup and release its caller.
+            auto_close = False
+            opened.clear()
+            caller = threading.Thread(target=slider.open_slider,
+                args=(50, lambda value: None))
+            caller.start()
+            assert opened.wait(5)
+            slider.shutdown_slider()
+            caller.join(5)
+            assert not caller.is_alive()
+        finally:
+            slider.shutdown_slider()
+        gc.collect()
+        assert roots[0]() is None
+        assert released_on == owners
+        assert slider._service is None
+        print("normal shutdown completed")
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "normal shutdown completed" in result.stdout
 
 
 def test_send_failure_closes_window():
@@ -285,3 +317,26 @@ def test_device_touch_flushes_pending_master_first():
     finally:
         if not fw._closing:
             fw.close()
+
+
+def test_cancelled_master_drag_keeps_room_labels_at_committed_values():
+    sent_dev = []
+    fw, sent = make_flyout(
+        devices=[("Kitchen", 30.0), ("Bedroom", 70.0)], sent_dev=sent_dev
+    )
+    try:
+        # Freeze the throttle clock so all touches remain within one interval.
+        for row in fw._all_rows():
+            row.throttle._clock = lambda: 0.0
+        fw._apply_row(fw._master, 60.0, True)
+        kitchen, bedroom = fw._device_rows
+        fw._apply_row(kitchen, 30.0, False)
+        fw._apply_row(fw._master, 65.0, True)
+        fw._apply_row(fw._master, 60.0, False)
+        assert sent == [60.0]
+        assert sent_dev == [("Kitchen", 30.0)]
+        assert kitchen.pct.cget("text") == "30"
+        assert bedroom.pct.cget("text") == "60"
+        assert fw.pct.cget("text") == "60"
+    finally:
+        fw.close()

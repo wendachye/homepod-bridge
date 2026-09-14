@@ -314,3 +314,48 @@ def test_watchdog_exits_promptly_when_stopped_during_backoff(monkeypatch):
         await asyncio.wait_for(task, timeout=1.0)  # must not wait the full 5s
 
     asyncio.run(run())
+
+
+def test_failure_disconnects_and_cleans_up_before_retry_delay(monkeypatch):
+    async def run():
+        stop = asyncio.Event()
+        cleaned = asyncio.Event()
+        events = []
+        scans = []
+
+        async def scan(*args, **kwargs):
+            scans.append(True)
+            return [SimpleNamespace(name="Bedroom", address="10.0.0.9")]
+
+        async def broken_stream(reader):
+            raise OSError("RTSP SETUP failed")
+
+        class Atv(FakeAtv):
+            def close(self):
+                super().close()
+
+                async def cleanup():
+                    assert events[-1] == "disconnected"
+                    cleaned.set()
+
+                return {asyncio.create_task(cleanup())}
+
+        async def connect(*args, **kwargs):
+            return Atv(broken_stream)
+
+        monkeypatch.setattr(airplay.pyatv, "scan", scan)
+        monkeypatch.setattr(airplay.pyatv, "connect", connect)
+        task = asyncio.create_task(stream_forever(
+            "id", object, policy=RetryPolicy(initial_delay=30), stop_event=stop,
+            on_event=lambda event, payload: events.append(event),
+        ))
+        try:
+            await asyncio.wait_for(cleaned.wait(), timeout=1)
+            assert not task.done()
+            assert len(scans) == 1
+            assert events == ["connecting", "connected", "disconnected"]
+        finally:
+            stop.set()
+            await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(run())

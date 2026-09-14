@@ -72,3 +72,24 @@ def test_app_icon_is_a_multi_size_ico(tmp_path):
         assert img.format == "ICO"
         sizes = img.info.get("sizes", set())
         assert (16, 16) in sizes and (256, 256) in sizes  # tray + toast sizes
+
+
+def test_existing_identity_is_refreshed_after_installation_moves(tmp_path, monkeypatch):
+    from homepod_bridge import app_identity, config
+
+    lnk = tmp_path / "HomePod Bridge.lnk"
+    launch = ["old-pythonw.exe", "-m homepod_bridge tray", "old-folder"]
+    writes = []
+    monkeypatch.setattr(app_identity.sys, "platform", "win32")
+    monkeypatch.setattr(app_identity, "set_process_aumid", lambda: True)
+    monkeypatch.setattr(app_identity, "start_menu_shortcut_path", lambda: lnk)
+    monkeypatch.setattr(app_identity, "read_shortcut_aumid", lambda path: APP_AUMID)
+    monkeypatch.setattr(app_identity, "write_app_icon", lambda path: None)
+    monkeypatch.setattr(config, "default_config_path", lambda: tmp_path / "config.json")
+    monkeypatch.setattr(app_identity, "_launch_command", lambda: tuple(launch))
+    monkeypatch.setattr(app_identity, "write_shortcut", lambda *args: writes.append(args))
+    assert app_identity.ensure_windows_identity()
+    launch[:] = ["new-app.exe", "", "new-folder"]
+    assert app_identity.ensure_windows_identity()
+    assert writes[-1][1:4] == tuple(launch)
+    assert len(writes) == 2

@@ -158,6 +158,7 @@ async def stream_forever(
 
     while not stop_event.is_set():
         atv = None
+        delay = None
         announced = False
         streaming_started = None
         try:
@@ -198,10 +199,6 @@ async def stream_forever(
                 delays = policy.delays()  # it streamed fine for a while
             delay = next(delays)
             logger.warning("%s - reconnecting in %.1fs", stats.last_error, delay)
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=delay)
-            except asyncio.TimeoutError:
-                pass
         finally:
             if announced:
                 emit("disconnected")
@@ -217,3 +214,10 @@ async def stream_forever(
                     raise
                 except Exception:  # noqa: BLE001 - teardown is best-effort
                     logger.debug("device teardown incomplete", exc_info=True)
+        # Failed connections and their UI state must be retired before
+        # sleeping, including when the backoff has reached its 30s cap.
+        if delay is not None and not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass

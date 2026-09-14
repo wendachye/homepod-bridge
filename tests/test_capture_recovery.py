@@ -42,7 +42,7 @@ def env():
 
 def start_streaming(engine):
     engine.rescan()
-    engine.set_selected(["Living Room", "Living Room (2)"])
+    engine.set_selected(["id-Living Room", "id-Living Room (2)"])
     engine.start_selected()
     assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
 
@@ -61,7 +61,7 @@ def test_capture_death_restarts_session_with_fresh_capture(env):
     snap = engine.snapshot()
     assert captures[0].stopped and captures[1].started
     assert snap.capture_restarts == 1
-    assert snap.selected == ("Living Room", "Living Room (2)")  # selection kept
+    assert snap.selected == ("id-Living Room", "id-Living Room (2)")  # selection kept
     assert alerts == []  # a single recovery is silent
 
 
@@ -143,7 +143,7 @@ def test_recovery_retries_a_device_that_is_still_settling(monkeypatch):
     )
     try:
         engine.rescan()
-        engine.set_selected(["Living Room"])
+        engine.set_selected(["id-Living Room"])
         engine.start_selected()
         assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
 
@@ -187,7 +187,7 @@ def test_recovery_gives_up_with_an_alert_when_the_device_never_returns(monkeypat
     )
     try:
         engine.rescan()
-        engine.set_selected(["Living Room"])
+        engine.set_selected(["id-Living Room"])
         engine.start_selected()
         assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
 
@@ -209,4 +209,18 @@ def test_capture_failure_after_stop_is_ignored(env):
     time.sleep(0.2)
     assert engine.snapshot().state is EngineState.IDLE
     assert len(captures) == 1  # no phantom restart
+    assert alerts == []
+
+
+def test_old_capture_callback_cannot_restart_a_new_session(env):
+    engine, captures, alerts = env
+    start_streaming(engine)
+    previous = captures[0]
+    engine.stop_streaming()
+    engine.start_selected()
+    assert wait_until(lambda: engine.snapshot().state is EngineState.STREAMING)
+    previous.on_failure()
+    time.sleep(0.1)
+    assert len(captures) == 2
+    assert engine.snapshot().capture_restarts == 0
     assert alerts == []
