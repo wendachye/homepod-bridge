@@ -4,10 +4,12 @@ Stream **Windows system audio** ("what you hear") to an Apple **HomePod** over A
 
 Pipeline: `WASAPI loopback (PyAudioWPatch) → int16 PCM/WAV → pyatv RAOP stream → HomePod`, wrapped in a reconnect watchdog. Audio is sent as PCM; no MP3 encoding is used in normal operation.
 
+**Continuing on another Windows PC?** Follow the [Windows handoff guide](docs/windows-handoff.md) to get the correct branch, set up development, download the tested EXE, and continue hardware validation.
+
 ## Requirements
 
 - Windows 10/11, Python 3.10+
-- PC and HomePod on the **same Wi-Fi network and band** (a HomePod on 2.4 GHz won't be discovered from a PC on 5 GHz on some routers)
+- PC and HomePod on the **same local network**, with communication between devices and mDNS discovery allowed (guest/client isolation can block this, including across Wi-Fi bands)
 - HomePod speaker access set to **"Anyone on the Same Network"** (Home app → your HomePod → Allow Speaker & TV Access). This is what makes RAOP show `Pairing: NotNeeded`.
 
 ## Install
@@ -67,7 +69,7 @@ Options: `--latency 0.5` (receiver buffer in seconds), `-v` before the command f
 | Symptom | Cause / fix |
 |---|---|
 | `RAOP=Disabled` or `Unsupported` in scan | Home app → HomePod → set speaker access to "Anyone on the Same Network". |
-| Device not found at all | Same Wi-Fi band? Firewall allowed? Try `scan --timeout 10`. |
+| Device not found at all | Check local-network connectivity, guest/client isolation, and private-network firewall access. Try `scan --timeout 10`. |
 | `RTSP ... SETUP failed with code 500` | Known HomePod quirk — restart the HomePod (unplug 10 s). The watchdog retries automatically. |
 | Stream drops occasionally | The watchdog reconnects with backoff and a fresh PCM/WAV stream. The tray changes to connecting as soon as the failed session ends. |
 | Audio delay | ~0.6 s by default. Lower it further with `raop_latency` in config.json (min 0.25 s), at the cost of jitter tolerance. Fine for music; for video, delay the audio track (VLC: `j`/`k`) — unusable for gaming. |
