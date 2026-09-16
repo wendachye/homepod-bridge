@@ -148,7 +148,8 @@ async def _run_stream(
     if len(targets) > 1:
         print(
             "Note: multi-device sync is best-effort. Speakers in the same room may\n"
-            "have a small audible offset; a Home-app stereo pair gives perfect sync."
+            "have an audible offset. For a Home-app stereo pair, select only its\n"
+            "primary member and use the Windows build with the native sender."
         )
     try:
         if not stop.is_set():
@@ -160,6 +161,7 @@ async def _run_stream(
                         RetryPolicy(),
                         stop_event=stop,
                         stats=stats[t.identifier],
+                        prefer_native=len(targets) == 1,
                     )
                     for t, sw in zip(targets, switches)
                 )

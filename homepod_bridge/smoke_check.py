@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -57,6 +58,21 @@ def run_smoke_check(report_path: Path) -> int:
         if len(decoded.samples) != 2048:
             raise RuntimeError("PCM decoder did not preserve the sample count")
         checks.append("PCM decode")
+
+        from .native_sender import helper_path
+        helper = helper_path()
+        if getattr(sys, "frozen", False) and sys.platform == "win32" and helper is None:
+            raise RuntimeError("frozen Windows build is missing HomePodSender.exe")
+        if helper is not None:
+            result = subprocess.run(
+                [str(helper), "--self-test"], capture_output=True, text=True,
+                timeout=10, check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            status = json.loads(result.stdout)
+            if not status.get("ok") or status.get("protocol") != 1:
+                raise RuntimeError("native sender protocol self-test failed")
+            checks.append("Native AirPlay 2 sender startup")
 
         if sys.platform == "win32":
             importlib.import_module("pyaudiowpatch")

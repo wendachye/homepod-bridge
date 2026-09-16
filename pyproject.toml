@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "homepod-bridge"
-version = "0.12.1"
+version = "0.12.4"
 description = "Stream Windows system audio to HomePods over AirPlay - an open TuneBlade alternative."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,3 +44,8 @@ Changelog = "https://github.com/wendachye/homepod-bridge/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 packages = ["homepod_bridge"]
+
+[tool.pytest.ini_options]
+# Windows Tcl retains native standard-stream handles. Per-test fd capture can
+# invalidate those handles and make later Tk initialization fail spuriously.
+addopts = "--capture=sys"

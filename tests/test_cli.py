@@ -39,7 +39,8 @@ def test_capture_failure_exits_even_before_discovery_finishes(monkeypatch, capsy
         await asyncio.sleep(0)
         return [dev("Bedroom")]
 
-    async def stream(identifier, open_reader, policy, stop_event, stats):
+    async def stream(identifier, open_reader, policy, stop_event, stats, prefer_native):
+        assert prefer_native
         assert failure_phase == "stream", "must not stream with already-dead capture"
         reader = open_reader()
         assert reader.read(44).startswith(b"RIFF")

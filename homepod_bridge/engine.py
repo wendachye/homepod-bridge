@@ -121,6 +121,7 @@ class BridgeEngine:
     ) -> None:
         self._scan_fn = scan_fn or airplay.scan_devices
         self._stream_fn = stream_fn or airplay.stream_forever
+        self._default_stream = stream_fn is None
         self._capture_factory = capture_factory or self._default_capture_factory
         # None => raw PCM (production). Tests inject an encoder to exercise
         # the MP3 path without lameenc.
@@ -372,6 +373,9 @@ class BridgeEngine:
                 stop_event=self._stop_evt,
                 stats=StreamStats(),
                 on_event=self._make_on_event(t.identifier),
+                # The native sender owns one PTP clock. A Home-app stereo
+                # pair is a single target; separate rooms still use RAOP.
+                **({"prefer_native": len(targets) == 1} if self._default_stream else {}),
             )
             for t in targets
         ]

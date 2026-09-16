@@ -24,8 +24,12 @@ def make_flyout(initial=50.0, devices=(), sent_dev=None):
         fw = FlyoutWindow(
             initial, sent.append, devices=devices, set_device_volume=set_dev
         )
-    except tk.TclError:
-        pytest.skip("no display available for tkinter")
+    except tk.TclError as exc:
+        # Only a genuinely unavailable display is a reason to skip. Broken
+        # Tcl initialization and lifecycle errors must fail the release check.
+        if "no display name" in str(exc) or "couldn't connect to display" in str(exc):
+            pytest.skip(f"no display available for tkinter: {exc}")
+        raise
     fw.root.update()
     return fw, sent
 

@@ -1,6 +1,25 @@
 # Changelog
 
 ## Unreleased - reliability and release validation
+- Correct the native dependency's encrypted-channel wrapper to reuse
+  HomeKit framing from the active cipher, and replace blocking discovery
+  receives with async waits so timeouts and cancellation work. Native builds
+  now run all supporting libraries' tests, including bounded regressions.
+- Use Python-stream pytest capture to avoid invalidating Windows Tcl's
+  native standard-stream handles. Render tests now fail on Tcl initialization
+  errors instead of treating every Tcl error as an unavailable display.
+- Fix native live playback remaining silent despite a connected state:
+  apply the PTP synchronization mode in the live streaming path, matching
+  the working file path. Local UDP tests now verify type-87 PTP sync
+  packets, the clock identity, and unchanged type-84 NTP behavior.
+- Windows builds include a separate AirPlay 2/PTP sender for a single
+  selected HomePod target, including a Home-app stereo pair. Live capture,
+  volume, reconnects and disconnect are supervised by the Python bridge.
+  Multiple selected targets retain the previous independent RAOP streams.
+- Native 48 kHz capture is reblocked before resampling; variable WASAPI
+  chunks no longer fail the sender's fixed-input resampler.
+- Native builds pin and verify upstream source and provide a complete
+  corresponding-source ZIP with dependencies and offline build instructions.
 - CLI capture failures during startup discovery are retained and cause a
   clean error exit; failed capture starts release their resources.
 - Short no-frame gaps preserve the PCM sample timeline without injecting

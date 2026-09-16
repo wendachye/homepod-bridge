@@ -359,3 +359,79 @@ def test_failure_disconnects_and_cleans_up_before_retry_delay(monkeypatch):
             await asyncio.wait_for(task, timeout=1)
 
     asyncio.run(run())
+
+
+def test_native_watchdog_reports_ready_and_closes_after_stream(monkeypatch):
+    from homepod_bridge import native_sender
+
+    async def run():
+        stop = asyncio.Event()
+        events = []
+        stats = StreamStats()
+        conf = SimpleNamespace(name='Stereo Pair', address='10.0.0.9')
+        reader = object()
+
+        class Session:
+            @classmethod
+            async def connect(cls, command, source):
+                assert source is reader
+                assert events == ['connecting']
+                return cls()
+
+            async def run(self):
+                assert events[-1] == 'connected'
+                stop.set()
+
+            def close(self):
+                assert events[-1] == 'disconnected'
+                events.append('closed')
+                return set()
+
+        async def scan(*args, **kwargs):
+            return [conf]
+
+        monkeypatch.setattr(airplay.pyatv, 'scan', scan)
+        monkeypatch.setattr(native_sender, 'command_for', lambda _: ['helper'])
+        monkeypatch.setattr(native_sender, 'NativeSession', Session)
+        await stream_forever('id', lambda: reader, stop_event=stop, stats=stats,
+                             on_event=lambda event, payload: events.append(event))
+        assert events == ['connecting', 'connected', 'disconnected', 'closed']
+        assert stats.connects == 1 and stats.failures == 0
+
+    asyncio.run(run())
+
+
+def test_native_without_ui_callback_applies_default_volume(monkeypatch):
+    from homepod_bridge import native_sender
+
+    async def run():
+        stop = asyncio.Event()
+        volumes = []
+
+        class Session:
+            def __init__(self):
+                self.audio = self
+
+            @classmethod
+            async def connect(cls, command, source):
+                return cls()
+
+            async def set_volume(self, level):
+                volumes.append(level)
+
+            async def run(self):
+                stop.set()
+
+            def close(self):
+                return set()
+
+        async def scan(*args, **kwargs):
+            return [SimpleNamespace(name='Pair', address='10.0.0.9')]
+
+        monkeypatch.setattr(airplay.pyatv, 'scan', scan)
+        monkeypatch.setattr(native_sender, 'command_for', lambda _: ['helper'])
+        monkeypatch.setattr(native_sender, 'NativeSession', Session)
+        await stream_forever('id', object, stop_event=stop)
+        assert volumes == [50.0], 'CLI has no tray callback to unmute the native sender'
+
+    asyncio.run(run())

@@ -10,6 +10,14 @@ verified from package metadata at release time.
 | [Pillow](https://python-pillow.org/) | MIT-CMU | Tray icon rendering |
 | [pystray](https://github.com/moses-palmer/pystray) | LGPL-3.0 | System-tray UI |
 | [lameenc](https://github.com/chrisstaite/lameenc) | LGPL-3.0-or-later (bundles [LAME](https://lame.sourceforge.io/), LGPL) | MP3 encoding |
+| [airplay2-rs](https://github.com/lmcgartland/airplay2-rs/tree/a2f980cf25bf13ae20158497cc2d2ea69cd88fa7) | GPL-3.0-or-later | Separate `HomePodSender.exe` process for AirPlay 2 stereo-pair playback |
+
+The Windows EXE includes the separately built GPL `HomePodSender.exe`.
+Its source and Windows modifications are provided in
+`HomePodSender-source.zip`, including vendored dependency source/licenses
+and offline build instructions. Ship that archive and
+`COPYING-HomePodSender.txt` alongside the binary. See
+[native/README.md](native/README.md) for its pinned source and build process.
 
 Distributing this project as **source** (this repository) is straightforward
 under all of the above. If you distribute a **bundled binary** (e.g. a

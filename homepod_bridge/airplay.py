@@ -130,6 +130,7 @@ async def stream_forever(
     stop_event: Optional[asyncio.Event] = None,
     stats: Optional[StreamStats] = None,
     on_event: Optional[Callable[[str, Optional[object]], None]] = None,
+    prefer_native: bool = True,
 ) -> None:
     """Stream to ``identifier`` until ``stop_event`` is set, reconnecting on
     any failure with capped exponential backoff.
@@ -169,15 +170,29 @@ async def stream_forever(
             if not confs:
                 raise ConnectionError(f"device {identifier} not found on network")
             conf = confs[0]
-            atv = await pyatv.connect(conf, loop)
+            from .native_sender import NativeSession, command_for
+
+            native_command = command_for(conf) if prefer_native else None
+            if native_command:
+                atv = await NativeSession.connect(native_command, open_reader())
+            else:
+                atv = await pyatv.connect(conf, loop)
             if stop_event.is_set():
                 return  # stopped mid-connect; finally closes atv
+            if native_command and on_event is None:
+                # The CLI has no tray callback to apply a saved volume.
+                # The helper starts muted, so give standalone streams the
+                # same 50% default as a new bridge configuration.
+                await atv.audio.set_volume(50.0)
             stats.connects += 1
             announced = True
             emit("connected", atv)
             logger.info("Connected to %s (%s) - streaming", conf.name, conf.address)
             streaming_started = time.monotonic()
-            await atv.stream.stream_file(open_reader())
+            if native_command:
+                await atv.run()
+            else:
+                await atv.stream.stream_file(open_reader())
             logger.info("Stream ended")
             if stop_event.is_set():
                 return

@@ -39,14 +39,25 @@ python -m homepod_bridge stream --device "Bedroom"
 python -m homepod_bridge stream --device "Living Room" --device "Living Room (2)"
 ```
 
-Options: `--latency 0.5` (receiver buffer in seconds), `-v` before the command for debug logs. `--bitrate` and `--quality` remain accepted for compatibility but have no effect on PCM streaming. Stop with `Ctrl+C`.
+Options: `--latency 0.5` (pyatv receiver buffer in seconds), `-v` before the command for debug logs. `--bitrate` and `--quality` remain accepted for compatibility but have no effect on PCM streaming. Stop with `Ctrl+C`.
+
+**HomePod stereo pairs (Windows EXE):** create the pair in Apple Home, then
+select only its primary member in the bridge (for the tested pair, Living
+Room). The bundled AirPlay 2 sender routes stereo audio through that target.
+Selecting both members starts independent streams and can produce echo.
+Source installs must first build the native helper using the instructions below;
+the Python wheel alone uses pyatv.
 
 ## Known limitations
 
-- Built on pyatv's reverse-engineered AirPlay sender (its `stream_file` is
-  marked incubating) - Apple firmware updates can break streaming until the
-  library catches up.
-- ~0.6 s latency (was ~3.2 s before 0.9.0). Most of it is the AirPlay
+- Uses the community AirPlay implementations pyatv and airplay2-rs. Apple
+  firmware updates can break streaming. Native stereo-pair playback is
+  experimental; the hardware validation record describes what was tested.
+- The native single-target HomePod sender adds roughly one second of live
+  prebuffering plus the receiver's delay. It is intended for music, and
+  `raop_latency` does not adjust this transport. Separate selected devices
+  still use independent pyatv streams with best-effort synchronization.
+- The pyatv path has ~0.6 s latency (was ~3.2 s before 0.9.0). Most of it is the AirPlay
   receiver buffer, tunable via `raop_latency` in config.json (default 0.5 s,
   range 0.25-2.0). Raise it if audio breaks up on a busy network. Still not
   suitable for gaming; fine for music, and for video delay the audio track
@@ -72,10 +83,10 @@ Options: `--latency 0.5` (receiver buffer in seconds), `-v` before the command f
 | Device not found at all | Check local-network connectivity, guest/client isolation, and private-network firewall access. Try `scan --timeout 10`. |
 | `RTSP ... SETUP failed with code 500` | Known HomePod quirk — restart the HomePod (unplug 10 s). The watchdog retries automatically. |
 | Stream drops occasionally | The watchdog reconnects with backoff and a fresh PCM/WAV stream. The tray changes to connecting as soon as the failed session ends. |
-| Audio delay | ~0.6 s by default. Lower it further with `raop_latency` in config.json (min 0.25 s), at the cost of jitter tolerance. Fine for music; for video, delay the audio track (VLC: `j`/`k`) — unusable for gaming. |
-| Audio breaks up / stutters after upgrading | The receiver buffer is now 0.5 s instead of 1.5 s. Raise `raop_latency` in config.json (try 1.0, then 1.5 for the old behaviour) and restart the tray. |
-| Stereo pair issues | HomePod stereo pairs are historically flaky with third-party RAOP senders. Test with a single unit first. |
-| Multi-device offset | Each speaker gets its own RAOP session, so sync is best-effort. Two unpaired HomePods in the *same room* may have an audible offset; if they're the same model, make them a stereo pair in the Home app (they merge into one endpoint with perfect internal sync) and stream with a single `--device`. |
+| Audio delay | The native stereo sender buffers about one second before receiver delay; suitable for music, not gaming. The pyatv path has ~0.6 s default delay, adjustable with `raop_latency` in config.json (min 0.25 s). |
+| Audio breaks up / stutters | For pyatv streams, raise `raop_latency` (try 1.0, then 1.5) and restart the tray. For the native stereo sender, inspect the log and check Wi-Fi quality; that setting does not apply. |
+| Only one speaker plays in a HomePod stereo pair | Use the Windows EXE with its bundled native sender and select only the pair's primary member. The log should say `Native AirPlay 2 stereo sender ready`. The earlier pyatv-only build played one member on the tested pair. |
+| Multi-device offset | Separate selected targets get independent sessions, so audible echo can occur. For a Home-app stereo pair, select its primary member once with the native Windows build. Synchronization between separate rooms remains best-effort. |
 
 ## Tray app (v2)
 
@@ -108,15 +119,21 @@ so switch Windows to your silent/virtual output *before* connecting.
 
 ### Build a single HomePodBridge.exe
 
+Install Rust (tested with 1.98.1) and Visual Studio C++ Build Tools as well
+as Python 3.12. The helper is built from verified, pinned upstream source.
+
 ```powershell
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install --require-hashes -r requirements-windows.lock
-.venv\Scripts\python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules homepod_bridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 launcher.py
+.venv\Scripts\python scripts/build_native_sender.py --source-package
+.venv\Scripts\python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules homepod_bridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 --add-binary "dist/native/HomePodSender.exe;native" --add-data "native/LICENSE;native" launcher.py
 ```
 
-Output lands in `dist\HomePodBridge.exe`. CI builds this executable and an
+Output lands in `dist\HomePodBridge.exe`. Distribute the source ZIP and
+license/notices from `dist/native` alongside it; see [native/README.md](native/README.md).
+CI builds this executable and an
 installable wheel, tests the wheel outside the source checkout, and runs
-the EXE with `--self-test REPORT.json` to check dependencies, PCM decoding,
+the EXE with `--self-test REPORT.json` to check the native sender, dependencies, PCM decoding,
 and volume popup reopen/shutdown. The self-test needs no HomePod or audio
 capture device. These checks do not establish playback reliability; follow
 [the release validation procedure](docs/release-validation.md) on Windows

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from homepod_bridge import shortcuts
+from homepod_bridge import app_identity, shortcuts
 from homepod_bridge.shortcuts import (
     APP_NAME,
     build_shortcut_script,
@@ -81,12 +81,19 @@ def test_validate_target_rejects_broken_interpreter(monkeypatch):
 
 def test_install_validates_before_creating_shortcuts(tmp_path, monkeypatch):
     calls = []
+    identities = []
 
     def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
         return SimpleNamespace(returncode=0, stderr="")
 
     monkeypatch.setattr(shortcuts.subprocess, "run", fake_run)
+    # install() also refreshes the Start Menu identity through native COM,
+    # independently of the mocked PowerShell call. Never touch the user's
+    # real shortcut with the temporary interpreter used by this test.
+    monkeypatch.setattr(
+        app_identity, "ensure_windows_identity", lambda: identities.append(True)
+    )
     (tmp_path / "python.exe").write_bytes(b"")
     monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
 
@@ -94,3 +101,4 @@ def test_install_validates_before_creating_shortcuts(tmp_path, monkeypatch):
     assert len(calls) == 2
     assert calls[0][1] == "-c"  # the interpreter probe runs first
     assert calls[1][0] == "powershell"  # then the shortcut script
+    assert identities == [True]

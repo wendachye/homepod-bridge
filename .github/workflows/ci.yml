@@ -65,17 +65,25 @@ jobs:
           Push-Location $validation
           python -c "import os, pathlib, homepod_bridge; assert not pathlib.Path(homepod_bridge.__file__).resolve().is_relative_to(pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()), 'imported the source checkout'"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m pytest tests -q
+          python -m pytest tests -q --capture=sys
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m homepod_bridge.smoke_check "$env:RUNNER_TEMP/wheel-smoke.json"
       - name: Build Windows executable
-        run: python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules homepod_bridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 launcher.py
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:RUSTUP_TOOLCHAIN = '1.98.1'
+          python scripts/build_native_sender.py --source-package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m PyInstaller --clean --noconfirm --noconsole --onefile --name HomePodBridge --collect-submodules homepod_bridge --collect-submodules pyatv --collect-binaries miniaudio --hidden-import pystray._win32 --add-binary "dist/native/HomePodSender.exe;native" --add-data "native/LICENSE;native" launcher.py
       - name: Check frozen executable startup and normal exit
         shell: pwsh
         run: |
           $report = Join-Path $env:RUNNER_TEMP 'exe-smoke.json'
           $exe = (Resolve-Path 'dist/HomePodBridge.exe').Path
-          $proc = Start-Process -FilePath $exe -ArgumentList @('--self-test', "`"$report`"") -WorkingDirectory $env:RUNNER_TEMP -PassThru
+          $proc = Start-Process -FilePath $exe -ArgumentList @('--self-test', "`"$report`"") -WorkingDirectory $env:RUNNER_TEMP -WindowStyle Hidden -PassThru
           if (-not $proc.WaitForExit(60000)) { $proc.Kill($true); throw 'EXE self-test timed out' }
           if (Test-Path $report) { Get-Content $report -Raw | Write-Output }
           if ($proc.ExitCode -ne 0) { throw "EXE exited with $($proc.ExitCode)" }
@@ -89,4 +97,7 @@ jobs:
           path: |
             dist/*.whl
             dist/HomePodBridge.exe
+            dist/native/HomePodSender-source.zip
+            dist/native/COPYING-HomePodSender.txt
+            dist/native/THIRD_PARTY_NOTICES.md
             ${{ runner.temp }}/*-smoke.json
