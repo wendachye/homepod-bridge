@@ -112,8 +112,9 @@ def main() -> None:
         (source / "BRIDGE-BUILD.txt").write_text(
             f"HomePodSender source based on airplay2-rs {REVISION}.\n"
             "Modifications: Windows UDP send-buffer support; live PCM CLI example;\n"
-            "live PTP synchronization, control-channel framing, nonblocking discovery;\n"
-            "UDP, cipher interoperability and bounded async discovery regression tests.\n"
+            "live PTP synchronization, HomePod Sync/Follow_Up clock mapping,\n"
+            "control-channel framing and nonblocking discovery;\n"
+            "UDP clock, cipher interoperability and bounded discovery regression tests.\n"
             "Install Rust and MSVC C++ build tools, then run from this directory:\n"
             "cargo build --offline --locked --release -p airplay-client --example homepod_sender\n"
             "Binary: target/release/examples/homepod_sender.exe\n"

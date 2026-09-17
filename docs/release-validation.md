@@ -4,6 +4,21 @@ Keep the app classified as beta until a release candidate passes both CI
 and the hardware checks below. CI alone does not test WASAPI drivers, real
 HomePods, Wi-Fi recovery, audio quality, or Apple firmware compatibility.
 
+## Scope of the next release
+
+At the user's request on September 18, 2026, playing an entire Apple Home
+stereo pair by selecting only one member is deferred from this release.
+Its failed listening tests remain recorded; this feature is excluded from
+the release criteria, not marked passed. Do not advertise automatic
+stereo-pair forwarding from a single selection.
+
+Selecting one entry still targets that individual speaker. To target both
+members, users must select both entries. The current implementation uses
+independent streams for multiple selections, so synchronization and reliable
+playback with both selected remain required validation for that use case.
+This scope change does not waive CI, single-speaker playback, or the other
+hardware checks below.
+
 ## Automated checks
 
 CI runs portable and Windows regression tests, including the lowest

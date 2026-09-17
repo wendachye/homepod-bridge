@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased - reliability and release validation
+## 0.12.5rc1 - release candidate, September 18, 2026
+
+This candidate remains beta while playback synchronization, endurance and
+recovery validation are incomplete. Selecting one member to play an entire
+HomePod stereo pair is deferred; select both entries to target both speakers.
+The two-selection path still uses independent streams and can produce echo.
+
+- Map the native sender's clock to matched HomePod Sync/Follow_Up packets
+  even when the receiver does not answer Delay_Req. Keep clock updates alive
+  between connection setup and playback. This fixes clock initialization,
+  not automatic forwarding to the second member of a stereo pair.
+- Validate the corrected runtime in a clean Windows Sandbox without Python
+  installed. Native validation reports 987 unique passing tests, including
+  seven clock regressions and four optional audio/network checks.
+
+### Reliability and packaging changes since 0.12.1
 - Correct the native dependency's encrypted-channel wrapper to reuse
   HomeKit framing from the active cipher, and replace blocking discovery
   receives with async waits so timeouts and cancellation work. Native builds
@@ -13,7 +28,8 @@
   the working file path. Local UDP tests now verify type-87 PTP sync
   packets, the clock identity, and unchanged type-84 NTP behavior.
 - Windows builds include a separate AirPlay 2/PTP sender for a single
-  selected HomePod target, including a Home-app stereo pair. Live capture,
+  selected HomePod target. Whole-pair delivery from one selection is not
+  supported. Live capture,
   volume, reconnects and disconnect are supervised by the Python bridge.
   Multiple selected targets retain the previous independent RAOP streams.
 - Native 48 kHz capture is reblocked before resampling; variable WASAPI

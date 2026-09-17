@@ -373,8 +373,8 @@ class BridgeEngine:
                 stop_event=self._stop_evt,
                 stats=StreamStats(),
                 on_event=self._make_on_event(t.identifier),
-                # The native sender owns one PTP clock. A Home-app stereo
-                # pair is a single target; separate rooms still use RAOP.
+                # The native sender supports one selected endpoint. Multiple
+                # selections use RAOP; single-selection pair relay is unsupported.
                 **({"prefer_native": len(targets) == 1} if self._default_stream else {}),
             )
             for t in targets

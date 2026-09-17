@@ -6,9 +6,11 @@ changes have not been merged into `main`.
 
 ## Current state
 
-- App version: **0.12.1**, still beta pending hardware validation.
-- Code baseline: **`a76100dfe4f888c4046a3970dc3de881d8182e21`**. Later commits
-  may add this guide or further changes; use the branch head for development.
+- App version: **0.12.5rc1**, still beta pending hardware validation. Use the
+  branch head for development and the exact release commit for candidate tests.
+- [Candidate notes](releases/0.12.5rc1.md) describe the narrowed scope:
+  whole-pair playback from one selection is deferred. Select both entries to
+  target both HomePods; synchronized two-speaker playback remains unconfirmed.
 - Fixes cover capture failure handling and silence timing, stable speaker
   selection and saved volumes, reconnect state, cancellation of auto-connect,
   volume window teardown, and Windows packaging.
@@ -17,8 +19,11 @@ changes have not been merged into `main`.
   The installed Windows wheel had **219 passed, 1 skipped**. The packaged EXE
   passed imports, PCM decoding, two actual volume window creations, and normal
   shutdown.
-- **Not yet validated:** actual Windows audio capture and HomePod playback,
-  prolonged playback, network recovery, and sleep/resume with hardware. Use
+- Subsequent Windows capture, native tests and clean Sandbox checks are
+  recorded in the [September 17–18 validation log](windows-validation-2026-09-17.md).
+- **Still pending:** final-candidate two-speaker synchronization, prolonged
+  audible playback, controlled network/output recovery, sleep/resume and the
+  remaining interactive checks. Use
   [the release validation checklist](release-validation.md) before declaring
   the app production-ready.
 
@@ -133,12 +138,20 @@ version, audio output/driver, HomePod model/firmware, and results. Include
 logs and reproduction steps for failures. Real playback is the main remaining
 work; successful offline checks alone do not finish it.
 
-## 4. Get the already tested EXE
+## 4. Get the release candidate
 
 No Python installation is required to run the bundled EXE. `dist/` is
 git-ignored, so **cloning or pulling does not download the EXE**.
 
-Open the [successful build](https://github.com/wendachye/homepod-bridge/actions/runs/34814462386),
+For 0.12.5rc1, use the candidate's [GitHub release](https://github.com/wendachye/homepod-bridge/releases)
+or its successful CI artifact. A draft release is visible only to repository
+collaborators and is not a production approval. Check `SHA256SUMS.txt` from
+that candidate; do not use a checksum from an older build.
+
+The following download instructions and checksum refer only to the older
+September 14 build and are retained for rollback:
+
+Open that [successful build](https://github.com/wendachye/homepod-bridge/actions/runs/34814462386),
 sign in to GitHub if needed, and download **windows-build-and-smoke-results**
 under Artifacts. Extract the ZIP and find `HomePodBridge.exe` inside its
 nested `dist` folder. It also contains the wheel and two smoke reports.

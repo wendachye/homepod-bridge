@@ -1,11 +1,19 @@
 # Windows validation, September 17, 2026
 
+The next candidate is **0.12.5rc1**; see its
+[release notes](releases/0.12.5rc1.md). The entries below preserve the exact
+versions and hashes used in the preceding tests.
+
 Current candidate: version **0.12.4** on
 `codex/windows-exe-build`, originally validated locally against base
 `e41ec5129f9c58d71cc2d62a03615b3a4126e383`.
 Status: **beta; the native encryption/discovery test blockers are repaired,
-and the final Windows Python suites pass without skips. Single-selection
-listening, Linux CI and the extended hardware checks remain unconfirmed**.
+and the final Windows Python suites pass without skips. Linux and Windows
+CI, including Windows packaging, now pass. Eight hours of passive process/log
+observation completed. Whole-pair playback from a single selection failed
+listening validation and has now been deferred from the next release at the
+user's request. Synchronization with both entries selected, continuous audible
+playback and the remaining controlled hardware checks are still unconfirmed**.
 
 ## 0.12.4: blocked automated checks completed
 
@@ -75,24 +83,330 @@ Evidence: `dist/release-fixes/`, including Python JUnit XML, native build
 logs, network discovery output, EXE/wheel smoke reports and
 `artifact-verification.json`. Red reproductions and temporary diagnostics
 are in `dist/release-fixes/debug/`. The previously running 0.12.3 EXE was
-not replaced or relaunched during this work.
+not replaced or relaunched during the initial local checks; the subsequent
+candidate launch is recorded below.
+
+### Committed candidate follow-up
+
+The candidate was committed and pushed to `codex/windows-exe-build` as
+`aee2aba51d3ee322c577ec1b45aae36f7d98af46`. The
+[GitHub CI run](https://github.com/wendachye/homepod-bridge/actions/runs/35143159069)
+has completed these jobs:
+
+| Check | Result |
+| --- | --- |
+| Ubuntu / Python 3.12 | **221 passed, 7 skipped**, 12.50 s. The seven platform-specific skips correspond to four shell-identity tests, the Core Audio COM probe, and two Windows Tk worker/lifecycle tests. |
+| Windows / Python 3.10 | **228 passed**, 17.25 s. |
+| Windows / Python 3.12 | **228 passed**, 17.37 s. |
+| Windows / Python 3.14 | **228 passed**, 17.15 s. |
+| Windows package job | **Passed.** Installed wheel: **228 passed**, 18.04 s. Native helper and nine libraries: **976 passed**, four optional tests ignored in CI (all four were exercised locally). The frozen EXE passed its runtime/import, PCM, native-helper and Windows UI reopen/shutdown checks and exited normally. Candidate artifacts uploaded successfully. |
+| Standalone candidate in a fresh temporary folder | **Passed** all EXE self-checks with only the EXE copied into the folder, `PATH` reduced to Windows/System32 and Windows, and Python/virtual-environment/Tcl override variables removed for the process. This checks runtime independence, but is not a clean Windows machine without Python installed. |
+| Single-target hardware probe | The 48 kHz generated left/right tone was sent only to Living Room (`192.168.100.83`) at volume 20. The helper reported 1,022 packets with zero underruns at its stats sample, and exited normally. Listening confirmation remains pending. The log includes a PTP initial-offset timeout and late decode/jitter warnings; normal exit does not establish audible playback or synchronization. |
+
+All five CI jobs were confirmed completed with `success` at approximately
+**04:01 Malaysia time**. The
+[CI artifact bundle](https://github.com/wendachye/homepod-bridge/actions/runs/35143159069/artifacts/10465943766)
+contains the wheel, EXE, corresponding native source, license notices and
+smoke reports. CI validates this source commit; the locally running EXE is
+the separately hashed local build recorded above.
+
+The prior tray process was stopped through its normal quit message before
+the hardware probe. The validated 0.12.4 EXE then replaced the local
+`dist/HomePodBridge.exe`; its hash still matches the candidate above.
+A rollback copy is retained at
+`dist/release-gate/HomePodBridge-0.12.3-before-validation.exe`.
+The new process started successfully, retained both saved speaker selections
+and master volume 38, and logged successful capture and both connections.
+
+The eight-hour **passive process/log observation completed** from
+**03:58:38 to 11:58:38 Malaysia time on September 17**. Both saved speaker
+entries remained selected; this observes the two-session configuration,
+not the unconfirmed single-target native stereo-pair path. An initial
+observer attempt failed because the reader did not share the log file with
+the app's open write handle. That observer was fixed and the full interval
+restarted; the failed attempt is preserved separately.
+
+| Completed observation | Result |
+| --- | --- |
+| Duration and samples | **28,800.03 seconds; 481 samples**. |
+| Process continuity | Same launcher/app PIDs (`11612`, `24896`) at every sample; no missing-process samples. Both were still running at the completion review. |
+| Sampling continuity | Maximum interval 61 seconds; no gaps over 120 seconds. |
+| Combined private memory | Initial 72,929,280 bytes; maximum 79,224,832 bytes; final 77,737,984 bytes (approximately 69.6, 75.6 and 74.1 MiB). No continuing rise was evident in the later hourly snapshots. |
+| Application log | Zero ERROR/CRITICAL records or tracebacks. Five warnings, all associated with the two automatically recovered endpoint-return events below. |
+| Artifact identity | The EXE's SHA-256 still matches the recorded 0.12.4 local candidate. |
+| Completion | Observer exited after the full interval. Scheduled follow-up paused; the bridge remains running. |
+
+Two naturally occurring endpoint-return events were observed:
+
+| Local time | Probe-reported preceding absence | Capture reopened | Connection recovery |
+| --- | --- | --- | --- |
+| 04:27:30 | Approximately 680 seconds | 0.74 seconds after return | Living Room (2) after 2.28 seconds; Living Room after 10.96 seconds, following one discovery failure and retry. |
+| 06:18:34 | Approximately 6,332 seconds | 0.70 seconds after return | Both connection-success messages appeared within 2.30 seconds, without a discovery retry. |
+
+No network, speaker or power settings were changed for these events. Their
+physical cause and audible recovery were not observed. The endpoint absences
+mean this run cannot establish continuous audible playback. The result is
+partial evidence of process stability and automatic reconnection, **not** a
+pass for audio quality, synchronization, speaker delivery, controlled
+output/network loss, ten sleep/resume cycles, or WAV rollover. A running
+process or quiet log alone does not establish a functioning audio stream.
+
+Evidence: `dist/release-gate/single-target-tone.log`,
+`isolated-exe-smoke.json`, `isolated-exe-context.json`,
+`observation-context.json`, `observation-status.json`,
+`observation-samples.jsonl`, `observed-tray.log`, `ci-test-summary.json`,
+`ci-package-results.txt`, `ci-completed.json`, and
+`observation-verification.json`.
+
+### Afternoon continuation: full audio path and clean Windows preparation
+
+At **15:49**, the actual packaged 0.12.4 EXE was started with only Living
+Room selected and volume 20. A generated stereo WAV played through Windows:
+left tone, right tone, then simultaneous pulses. The EXE logged a native
+sender connection to the single target. A separate instance of the production
+WASAPI capture code measured **798 chunks, 1,634,304 samples, 548,976 nonzero
+samples, peak 2,897, and zero capture-failure callbacks** at 48 kHz stereo.
+This establishes that generated Windows audio reached the capture path;
+the earlier silent-input-only limitation is resolved for this short check.
+The listener subsequently confirmed **only one HomePod played**. Mark this
+single-selection full-EXE check **failed**; successful capture does not
+establish delivery to both members of the stereo pair.
+The native log contains the initial PTP clock-offset timeout and two jitter
+warnings during the run. No application fix or audio-success claim follows
+from the captured signal alone.
+
+The app was stopped normally afterward and the original two selections,
+master volume 38 and other settings were restored. Both connection-success
+messages were subsequently logged. Two earlier attempts failed in the
+temporary harness before tone playback (inert tray-window selection and a
+Python-version-specific constant); those attempts are preserved separately
+and are not application failures. Evidence for the completed attempt:
+`dist/release-gate/full-path-20260917-154911/`.
+
+The continuing two-target session had also logged stream endings at
+**12:31:27** and **12:31:28**, followed by automatic reconnections at
+**12:31:28** and **12:31:30**. Their timing after the 06:18 session start is
+consistent with the declared PCM WAV duration of **22,369.62 seconds** at
+48 kHz stereo. This is an inference from the timing and EOF-style logs,
+not a verified acoustic rollover. The original lines and calculation are
+preserved in `dist/release-gate/later-session-rollover.log` and
+`rollover-context.json`.
+
+A disposable Windows Sandbox test bundle is prepared under
+`dist/release-gate/clean-windows/`. The candidate copy's hash matches the
+recorded EXE; PowerShell parsing, the window-helper compilation and mapped
+folder configuration were checked. The guest will run packaged smoke
+checks, start and normally close the actual tray, and check logging and
+the Start Menu shortcut. Networking, host microphone/camera, clipboard and
+printer redirection are disabled. This is preparation, not a passing guest
+test. After administrator approval, native DISM completed Sandbox enablement
+at **23:48** with exit code **3010**, meaning a restart is required.
+`/NoRestart` suppressed an automatic reboot. The feature reports enabled,
+but `WindowsSandbox.exe` is not yet available; the guest has not run.
+Evidence: `clean-windows/feature-result-v2.json` and `enable-dism.log`.
+
+### Evening continuation: isolate the missing speaker
+
+The user clarified the failed full-EXE listening result: **only one HomePod
+played**, rather than two speakers playing out of sync. The investigation
+ranked three hypotheses before further hardware testing: a difference between
+file and live streaming, loss of a channel during 48-to-44.1 kHz conversion,
+or a change in the pair's routing/leader state.
+
+A fresh discovery scan found both Living Room devices advertising the same
+`tsid` (tight-sync/stereo-pair identifier), with separate `gid` suffixes and
+both advertising leadership. This establishes the current advertisements,
+not successful stereo delivery. The existing file-control sender and current
+helper use the same connection and stream setup; the prepared connection
+source additionally contains the already-tested live PTP correction.
+
+A temporary probe exercised the actual native `LiveAudioDecoder`, including
+the production resampler, with known left-only, right-only and simultaneous
+stereo samples. Both 44.1 kHz input and 48 kHz input retained the intended
+channels at 44.1 kHz output. Active-channel RMS was approximately 2,120 and
+silent-channel RMS was zero for each isolated-channel measurement. This
+rules out channel loss in that decoder/resampler scenario, not a transport or
+receiver problem. Evidence: `dist/debug/pcm-channel-probe.log`.
+
+The first file-control replay at **23:52** was explicitly missed by the
+listener and is **not evaluated**. It is retained at
+`dist/release-gate/file-control-20260917-235206/`. A second replay at
+**23:54**, after the listener indicated readiness, completed with normal
+sender exit; the listener confirmed **only one HomePod played**. Thus the
+failure also occurs through the file path with capture bypassed. Both probes normally stopped
+the tray, sent only generated audio to Living Room at volume 20, then
+relaunched the original app without changing its configuration.
+
+The saved selection during these evening probes was only Living Room, with
+master volume 38. This differs from the two-selection configuration restored
+after the afternoon test; the probes preserved the current saved selection.
+An additional file probe targeted only Living Room (2) at **23:56**, because
+its advertised status flags contained bit 13, the tight-sync leader flag.
+The result from that listener check is still pending; it does not establish
+that choosing the other member repairs playback. Flag interpretation follows
+the [OpenAirPlay status-flag reference](https://openairplay.github.io/airplay-spec/status_flags.html).
+
+### September 18: experimental clock correction, not yet a release
+
+A silent diagnostic enabled logging only for the timing module; protocol
+logging that could reveal session keys remained at warning level. The
+unmodified sender received **107 Sync and 106 Follow_Up messages**, but
+published **zero clock offsets** and timed out after five seconds. No
+Delay_Resp messages arrived. The HomePod's timestamps used an uptime clock,
+while the PC supplied Unix wall-clock time, so a zero offset did not map
+between the clock epochs. Evidence:
+`dist/release-gate/timing-control-20260917-235844/`.
+
+The patched BMCA follower derives remote-minus-local offset from matched
+Sync/Follow_Up messages, including their signed correction fields. It rejects
+mismatched source identities, domains and sequence numbers; expires stale
+Syncs and filters delayed observations over a bounded window. One-way
+propagation delay remains unmeasured, so the implementation does not claim
+a known absolute error bound. The protocol approach is consistent with
+[NQPTP's timing processing](https://github.com/mikebrady/nqptp/blob/master/nqptp-message-handlers.c).
+
+Clock probes remain active without waiting for Delay_Resp. Offset updates
+also survive the normal gap between SETUP dropping its initial watch receiver
+and the audio streamer subscribing. The first patch iteration exposed this
+handover problem by stopping after two updates; that iteration was corrected
+and covered by a regression test. The final silent hardware probe completed
+setup in **0.9 seconds**, maintained **66 clock updates**, and had **zero
+initial-offset timeouts**. Evidence:
+`dist/release-gate/timing-control-20260918-000815/`.
+
+The UDP regression reproducing HomePod Sync/Follow_Up without Delay_Resp
+failed against the original loop and passed after the fix. Seven new tests
+cover clock mapping, sign/corrections, malformed or mismatched messages,
+stale samples, delay filtering and subscriber handover. The complete native
+helper/library suite now reports **983 passed, zero failures, four optional
+tests ignored**; those optional checks were exercised for the earlier
+candidate, not rerun for this patch. Evidence: `dist/debug/clock-red.log`,
+`clock-suite.log`, and `clock-native-build.log`.
+
+A corrected file-sender listening test ran at **00:06** with only Living Room
+targeted. It completed normally without the initial clock timeout; its
+**audible result is still pending**. Evidence:
+`dist/release-gate/file-control-20260918-000609/`. These timing improvements
+do not yet establish delivery to both speakers or audible synchronization.
+The original packaged 0.12.4 EXE remains separate from this experimental
+native fix. No production release has been published.
+
+The isolated corrected EXE was built at
+`dist/clock-candidate/exe/HomePodBridge.exe`; its packaged smoke check passed
+imports, PCM decoding, native-helper startup and actual Tk reopen/shutdown.
+The embedded helper matches the newly built native binary byte for byte.
+The corresponding source ZIP passes integrity checking and contains the
+current clock implementation. This diagnostic EXE retains the 0.12.4 version
+metadata; distinguish it by path and hash, not a release version number.
+
+- Diagnostic EXE SHA-256:
+  `ea5bccfa786b646dd52e7644916374e521f4931e40bff28a438f3fa64b2e5440`.
+- Native helper SHA-256:
+  `3a1245fd674d34f636395a0a65a4d5ca2d33ded3b95542283f8a4c9845cbf6dd`.
+- Corresponding source ZIP SHA-256:
+  `da5d32f0fbbb5abe90f0f3d2172f0feae99b94ce63dd2531dc645d98ac158da9`.
+
+Evidence: `dist/clock-candidate/exe-smoke.json` and
+`artifact-verification.json`.
+
+At **00:15 on September 18**, after the listener indicated readiness, the
+corrected full EXE ran with only Living Room selected and volume 20. The
+generated Windows playback contained isolated left/right tones and simultaneous
+pulses. Production WASAPI capture measured **799 chunks, 1,636,352 samples,
+549,183 nonzero samples, peak 2,897 and zero capture-failure callbacks** at
+48 kHz stereo. The native connection succeeded without an initial clock-offset
+timeout. The log contained short jitter warnings; these do not establish or
+rule out audible faults. The listener subsequently confirmed this test was
+**missed**; it is not evaluated acoustically.
+
+The original EXE was relaunched with the current saved two-speaker selection
+and volume 38 restored byte for byte. Evidence:
+`dist/release-gate/full-clock-20260918-001516/`. The clean-Windows guest bundle
+was also refreshed to the corrected EXE hash above, and its PowerShell script
+parses successfully. The guest and audio replay results after the host restart
+are recorded below.
+
+### September 18: clean Windows and corrected-EXE replay
+
+The host rebooted at **00:18:27 Malaysia time**. At **00:26**, the corrected
+EXE ran in Windows Sandbox (guest build 26100) without any discoverable Python
+commands or registered Python installation. Its hash matched the diagnostic
+EXE above. Packaged imports, PCM decoding, bundled helper startup, actual Tk
+reopen/shutdown, normal tray creation, logging, Start Menu shortcut creation
+and normal exit all passed. Only the input bundle and result folder were
+mapped; networking was disabled. This resolves the clean-machine runtime
+check, but does not validate visible notifications or hardware playback.
+The harness requested quit immediately after tray creation; the log records
+a cancelled startup discovery during that shutdown. That run does not
+establish completion of normal discovery. Evidence:
+`dist/release-gate/clean-windows/results/clean-windows-result.json`,
+`exe-smoke.json` and `clean-tray.log`.
+
+After the listener confirmed readiness, the same corrected EXE replayed the
+left/right tones and simultaneous pulses at **00:26:40**, with only Living
+Room selected and volume 20. The listener explicitly reported **only one
+HomePod played**. Mark this corrected full-path playback check **failed**:
+the clock correction has not resolved delivery to both members of the pair.
+Capture measured **798 chunks, 1,634,304 samples, 549,419 nonzero samples,
+peak 2,897 and zero failure callbacks**. The connection had no initial clock
+timeout, but logged short scheduling-jitter warnings. The original EXE and
+the exact saved configuration were restored after the test. Evidence:
+`dist/release-gate/full-clock-20260918-002620/`.
+
+A second controlled replay at **00:29:06** changed only the selected target
+to Living Room (2). The listener again confirmed **only one HomePod played**.
+Capture recorded 798 chunks, 1,634,304 samples, 548,976 nonzero samples,
+peak 2,897 and zero failures. This rules out simply selecting the other
+member as a fix for this setup. The original app and exact saved configuration
+were again restored. Evidence: `dist/release-gate/full-clock-20260918-002846/`.
+
+The four optional native checks were subsequently run against the corrected
+source: generated-WAV writing, actual audio-file encoding, live discovery
+scan and the bounded discovery-event stream all passed. Encoding produced
+1,000 packets; both Living Room HomePods were discovered. Together with the
+983 normal-suite tests, this gives **987 unique native tests passed** for the
+clock-corrected source. Evidence: `dist/debug/clock-optional-tests.log`.
+
+An isolated file-sender probe at **00:31:52** added a `SETPEERS` call listing
+both Living Room addresses and the local sender. The call completed and the
+probe exited normally; the listening result is pending. The library method
+does not expose or validate the returned status, so this is not proof that
+the receiver accepted the peer list. Evidence:
+`dist/release-gate/file-control-20260918-003148/`. A separate diagnostic using
+`AirPlayClient.connect_group` and one shared `AudioStreamer` for two receiver
+connections has been built but not run. Both diagnostic sources remain under
+`dist/debug`; neither change is included in the production helper or EXE.
 
 ### Remaining release gates
+
+On September 18 the user requested exclusion of single-selection stereo-pair
+playback from the production release requirements. That feature is now
+**deferred and outside the next release's scope**. Its failed results above
+remain unchanged. Selecting one individual speaker is still available;
+automatic forwarding to both pair members is not a supported claim.
+Documentation now tells users to select both entries to target both speakers.
+Further single-selection whole-pair diagnostics are not required for this
+release. The unconfirmed timing-peer probe remains unevaluated, and the
+prepared group probe has not run.
 
 Linux tests could not run locally: the installed Docker Desktop engine
 crashes during startup because its `Docker/run/dockerInference` socket
 cannot be accessed. Stopping the instance started for this check and trying
 to rename that temporary socket did not repair it; the rename failed with
 the same filesystem error. Docker images, containers and settings were not
-reset. At the end of this local check the changes were uncommitted and
-GitHub CI had not run. The follow-up validation will use the CI checks
-attached to the candidate's commit on `codex/windows-exe-build`.
+reset. The subsequent Ubuntu GitHub CI test job passed, resolving the Linux
+test blocker without changing Docker's data or settings.
 
-A listener is still needed for the single-selected-target test. No new
-claim of audible stereo synchronization follows from these automated
-repairs. Eight-hour playback, ten sleep/resume cycles, network/output-loss
-recovery and a clean Windows machine without development Python are still
-pending. The recommendation remains beta until those checks pass.
+The single-selected-target failures no longer block this narrower release
+scope. However, the two-selection path starts independent streams and has not
+passed a controlled synchronization and endurance check for the release
+candidate. No claim of audible stereo synchronization follows from the
+automated repairs. The earlier committed CI also does not validate the
+uncommitted clock correction if that correction is included in the release.
+Eight-hour audible playback, ten sleep/resume cycles, network/output-loss
+recovery, visible notifications and the remaining hardware/UI checks are
+still pending. The clean Windows guest runtime check passed after the host
+restart. The recommendation remains beta until the outstanding checks pass.
 
 ## Earlier expanded release checks on 0.12.3
 

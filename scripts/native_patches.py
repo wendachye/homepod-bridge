@@ -113,10 +113,26 @@ def patch_browser(text: str) -> str:
     return text
 
 
+def patch_ptp(text: str) -> str:
+    return section(
+        text,
+        "    // Phase 4: Slave loop (receive Sync/Follow_Up, send Delay_Req, calculate offset)",
+        "/// Run as PTP master to multiple HomePods for group streaming.",
+        '''    run_bmca_slave(
+        event_socket, general_socket, master_ip, event_dest,
+        clock_identity, offset_tx,
+    ).await
+}
+
+''',
+    )
+
+
 def apply_patches(archive: Path, source: Path, root: Path) -> None:
     patches = [
         ("airplay-pairing", "channel.rs", patch_channel, "channel_tests.rs"),
         ("airplay-discovery", "browser.rs", patch_browser, "discovery_tests.rs"),
+        ("airplay-timing", "ptp.rs", patch_ptp, "ptp_clock.rs"),
     ]
     with zipfile.ZipFile(archive) as upstream:
         for crate, module, transform, test_file in patches:

@@ -25,8 +25,12 @@ dependencies, their licenses, and offline build instructions. Distribute
 `dist/native/HomePodSender-source.zip`, the license and third-party notices
 alongside any EXE containing this helper.
 
-One sender process supports one HomePod target, including an Apple Home
-stereo pair through its primary member. Multiple independently selected
+One sender process supports one HomePod target. Single-target Apple Home
+stereo-pair delivery is not working in the current hardware tests: only one
+member plays, including with the experimental clock correction. Delivery to
+the whole pair from one selected entry is deferred from the next release;
+selecting an individual speaker remains available. See the
+[validation record](../docs/windows-validation-2026-09-17.md). Multiple independently selected
 devices still use the original pyatv transport. The native sender uses
 PTP ports 319/320, ALAC at 44.1 kHz, and resamples incoming live PCM.
 Its live prebuffer adds about one second; `raop_latency` applies only to

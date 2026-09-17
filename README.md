@@ -41,18 +41,22 @@ python -m homepod_bridge stream --device "Living Room" --device "Living Room (2)
 
 Options: `--latency 0.5` (pyatv receiver buffer in seconds), `-v` before the command for debug logs. `--bitrate` and `--quality` remain accepted for compatibility but have no effect on PCM streaming. Stop with `Ctrl+C`.
 
-**HomePod stereo pairs (Windows EXE):** create the pair in Apple Home, then
-select only its primary member in the bridge (for the tested pair, Living
-Room). The bundled AirPlay 2 sender routes stereo audio through that target.
-Selecting both members starts independent streams and can produce echo.
+**HomePod stereo pairs (Windows EXE):** select both speaker entries to target
+both members. Playing the whole pair through a single selected entry is
+unsupported and deferred from the next release; the listening tests produced
+sound from only one member. Selecting one entry targets that individual
+speaker using the bundled native AirPlay 2 sender. Selecting both members
+starts independent streams and can produce echo; synchronized two-speaker
+playback remains under validation. See the
+[hardware test record](docs/windows-validation-2026-09-17.md).
 Source installs must first build the native helper using the instructions below;
 the Python wheel alone uses pyatv.
 
 ## Known limitations
 
 - Uses the community AirPlay implementations pyatv and airplay2-rs. Apple
-  firmware updates can break streaming. Native stereo-pair playback is
-  experimental; the hardware validation record describes what was tested.
+  firmware updates can break streaming. Playing an entire stereo pair from
+  one selected entry is unsupported and deferred from the next release.
 - The native single-target HomePod sender adds roughly one second of live
   prebuffering plus the receiver's delay. It is intended for music, and
   `raop_latency` does not adjust this transport. Separate selected devices
@@ -85,8 +89,8 @@ the Python wheel alone uses pyatv.
 | Stream drops occasionally | The watchdog reconnects with backoff and a fresh PCM/WAV stream. The tray changes to connecting as soon as the failed session ends. |
 | Audio delay | The native stereo sender buffers about one second before receiver delay; suitable for music, not gaming. The pyatv path has ~0.6 s default delay, adjustable with `raop_latency` in config.json (min 0.25 s). |
 | Audio breaks up / stutters | For pyatv streams, raise `raop_latency` (try 1.0, then 1.5) and restart the tray. For the native stereo sender, inspect the log and check Wi-Fi quality; that setting does not apply. |
-| Only one speaker plays in a HomePod stereo pair | Use the Windows EXE with its bundled native sender and select only the pair's primary member. The log should say `Native AirPlay 2 stereo sender ready`. The earlier pyatv-only build played one member on the tested pair. |
-| Multi-device offset | Separate selected targets get independent sessions, so audible echo can occur. For a Home-app stereo pair, select its primary member once with the native Windows build. Synchronization between separate rooms remains best-effort. |
+| Only one speaker plays in a HomePod stereo pair | Select both entries to target both speakers. Automatic delivery to the whole pair from one selection is unsupported and deferred. A `Native AirPlay 2 stereo sender ready` log entry confirms connection, not delivery to both speakers. |
+| Multi-device offset | Separate selected targets get independent sessions, so audible echo can occur. Two-speaker synchronization remains under validation; excluding automatic stereo-pair forwarding does not resolve this limitation. |
 
 ## Tray app (v2)
 

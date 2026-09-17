@@ -1,2 +1,2 @@
 """homepod-bridge: stream Windows system audio to a HomePod over AirPlay."""
-__version__ = "0.12.4"
+__version__ = "0.12.5rc1"
