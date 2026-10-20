@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.12.5rc2 - release candidate, October 21, 2026
+
+- Fix audible echo between explicitly selected HomePods in the Windows tray
+  app by using one PCM source, decoder and native PTP timeline for the group.
+  A full Windows EXE listening test confirmed both speakers sound synchronized.
+- Preserve independent volume controls and restart all group members together
+  after a transport failure. Wait for every group endpoint before announcing
+  the group ready.
+- Add a two-receiver UDP regression that checks matching audio payloads,
+  RTP timestamps and PTP clock mappings, plus group lifecycle and volume tests.
+- Keep the release classified as beta while endurance and hardware recovery
+  checks remain incomplete. Select both entries for both speakers; automatic
+  whole-pair playback from one selection remains unsupported. CLI streams,
+  mixed-device selections and installations without the helper retain
+  independent RAOP sessions. Initial discovery can still miss a selected peer.
+
 ## 0.12.5rc1 - release candidate, September 18, 2026
 
 This candidate remains beta while playback synchronization, endurance and

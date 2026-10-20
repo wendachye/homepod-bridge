@@ -635,3 +635,48 @@ def test_slow_old_scan_does_not_overwrite_newer_discovery():
             assert engine.snapshot().devices[0].name == "New name"
     finally:
         engine.shutdown()
+
+
+def test_default_multi_device_stream_uses_one_source_and_individual_volumes(monkeypatch):
+    from homepod_bridge import group_stream
+
+    calls, peers, readers = [], {}, []
+
+    async def scan_fn(timeout=6):
+        return [dev("Left"), dev("Right")]
+
+    async def group(targets, open_readers, on_events, stop_event):
+        calls.append([t.identifier for t in targets])
+        reader = open_readers[targets[0].identifier]()
+        readers.append(reader)
+        try:
+            for target in targets:
+                peer = peers[target.identifier] = FakeAtv()
+                on_events[target.identifier]("connected", peer)
+            await stop_event.wait()
+        finally:
+            reader.close()
+            for target in targets:
+                on_events[target.identifier]("disconnected")
+
+    monkeypatch.setattr(group_stream, "stream_group_forever", group)
+    engine = BridgeEngine(scan_fn=scan_fn, capture_factory=FakeCapture,
+                          device_volumes={"id-Left": 25, "id-Right": 75})
+    try:
+        engine.rescan()
+        engine.set_selected(["id-Left", "id-Right"])
+        engine.start_selected()
+        assert wait_until(lambda: len(engine.snapshot().connected) == 2)
+        assert calls == [["id-Left", "id-Right"]]
+        assert len(engine._pipes) == 1, "Group members must share a single captured-audio cursor"
+        assert wait_until(lambda: all(peer.levels for peer in peers.values()))
+        assert peers["id-Left"].levels[-1] == 25
+        assert peers["id-Right"].levels[-1] == 75
+        engine.set_device_volume("id-Right", 60)
+        assert peers["id-Left"].levels[-1] == 25
+        assert peers["id-Right"].levels[-1] == 60
+        engine.stop_streaming()
+        assert readers[0].closed
+        assert engine.snapshot().connected == ()
+    finally:
+        engine.shutdown()

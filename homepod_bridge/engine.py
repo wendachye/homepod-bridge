@@ -46,13 +46,9 @@ CAPTURE_REOPEN_DELAY = 2.0
 # thread also injects silence when the PC is quiet, so a tight bound cannot
 # underrun. Jitter is absorbed by the receiver's own buffer (raop_latency).
 LIVE_BUFFER_SECONDS = 0.4
-# Multi-room drift correction. Each device runs its own RAOP session with
-# its own buffer, and the backlog standing in that buffer IS how far behind
-# live it plays. Devices connect seconds apart and independently discard
-# different amounts of startup backlog, so without correction they settle at
-# different offsets - measured 21ms typical and up to 320ms between two
-# HomePods, which is audible as a smear. Trim laggards back to the most-live
-# device whenever they drift past the threshold.
+# Capture-backlog bound. Trimming these queues cannot synchronize separate
+# decoders or receiver schedules. Selected HomePods instead share one native
+# source/clock; legacy RAOP fallback still only gets best-effort queue trimming.
 RESYNC_INTERVAL = 1.0
 RESYNC_THRESHOLD_SECONDS = 0.02
 # Where every device should sit relative to live. Equalising the rooms
@@ -365,20 +361,28 @@ class BridgeEngine:
 
         self._stop_evt = asyncio.Event()
         self._state = EngineState.CONNECTING
-        tasks = [
-            self._stream_fn(
-                t.identifier,
-                self._make_open_reader(t, fmt),
-                policy=RetryPolicy(),
-                stop_event=self._stop_evt,
-                stats=StreamStats(),
-                on_event=self._make_on_event(t.identifier),
-                # The native sender supports one selected endpoint. Multiple
-                # selections use RAOP; single-selection pair relay is unsupported.
-                **({"prefer_native": len(targets) == 1} if self._default_stream else {}),
-            )
-            for t in targets
-        ]
+        if self._default_stream and self._encoder_factory is None and len(targets) > 1:
+            from .group_stream import stream_group_forever
+
+            tasks = [stream_group_forever(
+                targets,
+                {t.identifier: self._make_open_reader(t, fmt) for t in targets},
+                {t.identifier: self._make_on_event(t.identifier) for t in targets},
+                self._stop_evt,
+            )]
+        else:
+            tasks = [
+                self._stream_fn(
+                    t.identifier,
+                    self._make_open_reader(t, fmt),
+                    policy=RetryPolicy(),
+                    stop_event=self._stop_evt,
+                    stats=StreamStats(),
+                    on_event=self._make_on_event(t.identifier),
+                    **({"prefer_native": len(targets) == 1} if self._default_stream else {}),
+                )
+                for t in targets
+            ]
         self._session = asyncio.gather(*tasks, return_exceptions=True)
         # Runs for a single device too: standing backlog is added latency
         # regardless of how many rooms are playing.
@@ -389,7 +393,7 @@ class BridgeEngine:
         return self._make_snapshot()
 
     async def _keep_devices_in_sync(self, fmt) -> None:
-        """Hold every device close to live, and therefore to each other."""
+        """Bound capture backlog; inter-device synchronization belongs to the sender."""
         byte_rate = fmt.sample_rate * fmt.channels * fmt.sample_width
         threshold = int(RESYNC_THRESHOLD_SECONDS * byte_rate)
         target = int(RESYNC_TARGET_SECONDS * byte_rate)

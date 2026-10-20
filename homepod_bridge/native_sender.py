@@ -1,7 +1,8 @@
 """Live PCM transport to the separately licensed AirPlay 2 sender process.
 
 Protocol 1: stdin packets are <kind:u8, size:u32-le, payload>. Kinds are
-1 (interleaved signed 16-bit PCM), 2 (0..1 float32 volume), and 3 (stop).
+1 (interleaved signed 16-bit PCM), 2 (0..1 float32 volume), 3 (stop), and
+4 (group member uint16 index followed by 0..1 float32 volume).
 stdout carries JSON events; stderr carries diagnostics. No shell is used.
 """
 from __future__ import annotations
@@ -45,6 +46,29 @@ def command_for(conf) -> list[str] | None:
     return [str(helper), str(conf.address), str(service.port), features]
 
 
+def group_command_for(configs) -> list[str] | None:
+    """One helper owns all HomePod transports and their common sample clock."""
+    commands = [command_for(conf) for conf in configs]
+    if not 2 <= len(commands) <= 16 or any(command is None for command in commands):
+        return None
+    targets = [{"host": command[1], "port": int(command[2]), "features": command[3]}
+               for command in commands]
+    if len({(target["host"], target["port"]) for target in targets}) != len(targets):
+        raise ValueError("duplicate native group endpoint")
+    return [commands[0][0], "--group", json.dumps(targets, separators=(",", ":"))]
+
+
+class _GroupTarget:
+    def __init__(self, session, index):
+        self.session, self.index = session, index
+        self.audio = self
+
+    async def set_volume(self, level: float) -> None:
+        await self.session._send(
+            4, struct.pack("<Hf", self.index, max(0.0, min(100.0, level)) / 100)
+        )
+
+
 class NativeSession:
     def __init__(self, reader):
         self.reader = reader
@@ -54,10 +78,12 @@ class NativeSession:
         self._tasks = []
         self._closing = None
         self._stderr = None
+        self._target_count = 1
 
     @classmethod
-    async def connect(cls, command: list[str], reader) -> "NativeSession":
+    async def connect(cls, command: list[str], reader, *, target_count=1) -> "NativeSession":
         session = cls(reader)
+        session._target_count = target_count
         try:
             header = await asyncio.to_thread(reader.read, 44)
             if (len(header) != 44 or header[:4] != b"RIFF"
@@ -83,11 +109,18 @@ class NativeSession:
             event = json.loads(line)
             if event.get("event") != "ready" or event.get("protocol") != 1:
                 raise ConnectionError("native sender failed before ready: " + str(event))
-            logger.info("Native AirPlay 2 stereo sender ready")
+            if target_count > 1 and event.get("targets") != target_count:
+                raise ConnectionError("native sender did not establish every group member")
+            logger.info("Native AirPlay 2 sender ready for %d selected endpoint(s)", target_count)
             return session
         except BaseException:
             await session._close()
             raise
+
+    def target(self, index: int):
+        if not 0 <= index < self._target_count:
+            raise IndexError("native group member index out of range")
+        return _GroupTarget(self, index)
 
     async def _send(self, kind: int, payload: bytes = b"") -> None:
         async with self._write_lock:

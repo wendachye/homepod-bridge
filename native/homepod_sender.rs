@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // HomePod Bridge live-PCM command-line sender. Built inside airplay2-rs.
 use airplay_audio::{AlacEncoder, LiveAudioDecoder, LivePcmFrame};
-use airplay_client::Connection;
+use airplay_client::{AirPlayClient, Connection};
 use airplay_core::device::{Device, DeviceId};
 use airplay_core::features::Features;
 use airplay_core::stream::{PtpMode, StreamType, TimingProtocol};
@@ -11,7 +11,94 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 type Error = Box<dyn std::error::Error>;
-enum Command { Volume(f32), Stop, Error(String) }
+enum Command { Volume(f32), MemberVolume(usize, f32), Stop, Error(String) }
+
+enum Sender { Single(Connection), Group(AirPlayClient) }
+impl Sender {
+    async fn volume(&mut self, volume: f32) -> Result<(), Error> {
+        match self {
+            Self::Single(conn) => conn.set_volume(volume).await?,
+            Self::Group(client) => {
+                for index in 0..client.group_device_count() {
+                    client.set_group_member_volume(index, volume).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn member_volume(&mut self, index: usize, volume: f32) -> Result<(), Error> {
+        match self {
+            Self::Group(client) => client.set_group_member_volume(index, volume).await?,
+            Self::Single(conn) if index == 0 => conn.set_volume(volume).await?,
+            _ => return Err("invalid group member".into()),
+        }
+        Ok(())
+    }
+    async fn start(&mut self, decoder: LiveAudioDecoder) -> Result<(), Error> {
+        match self {
+            Self::Single(conn) => conn.start_streaming_live(decoder).await?,
+            Self::Group(client) => client.start_live_streaming_to_group(decoder).await?,
+        }
+        Ok(())
+    }
+    async fn feedback(&mut self) -> Result<(), Error> {
+        match self {
+            Self::Single(conn) => conn.send_feedback().await?,
+            Self::Group(client) => client.send_group_feedback().await?,
+        }
+        Ok(())
+    }
+    fn stats(&self) -> (u64, u64) {
+        match self {
+            Self::Single(conn) => (conn.streamer_packets_sent(), conn.streamer_underruns()),
+            Self::Group(client) => {
+                let stats = client.stats_snapshot();
+                (stats.packets_sent, stats.underruns)
+            }
+        }
+    }
+    async fn close(&mut self) -> Result<(), Error> {
+        match self {
+            Self::Single(conn) => { conn.stop().await?; conn.disconnect().await?; }
+            Self::Group(client) => { client.stop().await?; client.disconnect().await?; }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Target {
+    host: IpAddr,
+    port: u16,
+    features: String,
+}
+
+fn parse_args(args: &[String]) -> Result<(Vec<Device>, u32, u8), Error> {
+    let (targets, rate, channels) = if args.get(1).map(String::as_str) == Some("--group") {
+        if args.len() != 5 { return Err("usage: HomePodSender --group targets-json sample-rate channels".into()); }
+        let targets: Vec<Target> = serde_json::from_str(&args[2])?;
+        if !(2..=16).contains(&targets.len()) { return Err("group requires 2 to 16 endpoints".into()); }
+        (targets, &args[3], &args[4])
+    } else {
+        if args.len() != 6 { return Err("usage: HomePodSender host port features sample-rate channels".into()); }
+        (vec![Target { host: args[1].parse()?, port: args[2].parse()?, features: args[3].clone() }],
+         &args[4], &args[5])
+    };
+    let sample_rate: u32 = rate.parse()?;
+    let channels: u8 = channels.parse()?;
+    if !(8000..=192000).contains(&sample_rate) || !(1..=2).contains(&channels) {
+        return Err("unsupported PCM format".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut devices = Vec::new();
+    for target in targets {
+        if target.port == 0 || !seen.insert((target.host, target.port)) {
+            return Err("invalid or duplicate endpoint".into());
+        }
+        devices.push(device(target.host, target.port, Features::from_txt_value(&target.features)?));
+    }
+    Ok((devices, sample_rate, channels))
+}
 
 // rubato's fixed-input resampler requires exactly 1024 frames. WASAPI and
 // pipe reads can split anywhere, so retain the remainder between commands.
@@ -40,7 +127,8 @@ fn event(value: serde_json::Value) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--self-test") {
-        event(serde_json::json!({"ok": true, "protocol": 1, "sender": "HomePodSender"}));
+        event(serde_json::json!({"ok": true, "protocol": 1, "sender": "HomePodSender",
+                               "capabilities": ["shared-clock-group", "member-volume"]}));
         return;
     }
     // Protocol traces can contain session keys. Never enable them here.
@@ -54,21 +142,12 @@ fn main() {
     }
 }
 
-async fn run(args: &[String]) -> Result<(), Error> {
-    if args.len() != 6 { return Err("usage: HomePodSender host port features sample-rate channels".into()); }
-    let ip: IpAddr = args[1].parse()?;
-    let port: u16 = args[2].parse()?;
-    let features = Features::from_txt_value(&args[3])?;
-    let sample_rate: u32 = args[4].parse()?;
-    let channels: u8 = args[5].parse()?;
-    if !(8000..=192000).contains(&sample_rate) || !(1..=2).contains(&channels) {
-        return Err("unsupported PCM format".into());
-    }
+fn device(ip: IpAddr, port: u16, features: Features) -> Device {
     let id = match ip {
         IpAddr::V4(v4) => { let o = v4.octets(); DeviceId([o[0],o[1],o[2],o[3],0,0]) },
         IpAddr::V6(v6) => { let o = v6.octets(); DeviceId([o[0],o[1],o[2],o[3],o[4],o[5]]) },
     };
-    let device = Device {
+    Device {
         id, name: "HomePod Bridge".into(), model: "HomePod".into(),
         manufacturer: None, serial_number: None, addresses: vec![ip], port,
         features, required_sender_features: None, public_key: None,
@@ -83,7 +162,12 @@ async fn run(args: &[String]) -> Result<(), Error> {
         raop_port: None, raop_encryption_types: None, raop_codecs: None,
         raop_transport: None, raop_metadata_types: None, raop_digest_auth: false,
         vodka_version: None,
-    };
+    }
+}
+
+async fn run(args: &[String]) -> Result<(), Error> {
+    let (mut devices, sample_rate, channels) = parse_args(args)?;
+    let target_count = devices.len();
     let audio_format = AudioFormat::default();
     let asc = Some(AlacEncoder::new(audio_format.clone())?.magic_cookie());
     let config = StreamConfig {
@@ -91,10 +175,17 @@ async fn run(args: &[String]) -> Result<(), Error> {
         timing_protocol: TimingProtocol::Ptp, ptp_mode: PtpMode::Master,
         latency_min: 22050, latency_max: 88200, supports_dynamic_stream_id: true, asc,
     };
-    let mut conn = Connection::connect_auto(device, config, "3939").await?;
-    conn.setup().await?;
+    let mut conn = if devices.len() == 1 {
+        let mut connection = Connection::connect_auto(devices.remove(0), config, "3939").await?;
+        connection.setup().await?;
+        Sender::Single(connection)
+    } else {
+        let mut client = AirPlayClient::with_config(config, None)?;
+        client.connect_group(&devices).await?;
+        Sender::Group(client)
+    };
     // Stay muted until the bridge applies the user's saved volume.
-    conn.set_volume(0.0).await?;
+    conn.volume(0.0).await?;
     let (audio, decoder) = LiveAudioDecoder::create_pair(sample_rate, 2, 8);
     let (commands, mut received) = tokio::sync::mpsc::channel(16);
     std::thread::Builder::new().name("pcm-input".into()).spawn(move || {
@@ -124,6 +215,16 @@ async fn run(args: &[String]) -> Result<(), Error> {
                         if !volume.is_finite() { return Err(std::io::Error::other("invalid volume")); }
                         if commands.blocking_send(Command::Volume(volume.clamp(0.0, 1.0))).is_err() { break; }
                     },
+                    4 if size == 6 => {
+                        let index = u16::from_le_bytes(body[..2].try_into().unwrap()) as usize;
+                        let volume = f32::from_le_bytes(body[2..].try_into().unwrap());
+                        if index >= target_count || !volume.is_finite() {
+                            return Err(std::io::Error::other("invalid group volume"));
+                        }
+                        if commands.blocking_send(Command::MemberVolume(index, volume.clamp(0.0, 1.0))).is_err() {
+                            break;
+                        }
+                    },
                     3 if size == 0 => break,
                     _ => return Err(std::io::Error::other("invalid command")),
                 }
@@ -134,8 +235,8 @@ async fn run(args: &[String]) -> Result<(), Error> {
         let _ = commands.blocking_send(command);
     })?;
     // Signal before start_streaming_live: its prebuffer needs incoming PCM.
-    event(serde_json::json!({"event": "ready", "protocol": 1}));
-    conn.start_streaming_live(decoder).await?;
+    event(serde_json::json!({"event": "ready", "protocol": 1, "targets": target_count}));
+    conn.start(decoder).await?;
     let mut feedback = tokio::time::interval(Duration::from_secs(2));
     feedback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut ticks = 0;
@@ -145,33 +246,62 @@ async fn run(args: &[String]) -> Result<(), Error> {
         tokio::select! {
             command = received.recv() => match command {
                 Some(Command::Volume(value)) => {
-                    conn.set_volume(value).await?;
+                    conn.volume(value).await?;
                     event(serde_json::json!({"event":"volume", "value":value}));
+                },
+                Some(Command::MemberVolume(index, value)) => {
+                    conn.member_volume(index, value).await?;
+                    event(serde_json::json!({"event":"volume", "index":index, "value":value}));
                 },
                 Some(Command::Error(message)) => return Err(message.into()),
                 Some(Command::Stop) | None => break,
             },
             _ = feedback.tick() => {
-                conn.send_feedback().await?;
-                let packets = conn.streamer_packets_sent();
+                conn.feedback().await?;
+                let (packets, underruns) = conn.stats();
                 stalled = if packets == last_packets { stalled + 1 } else { 0 };
                 if stalled >= 5 { return Err("audio sender stalled".into()); }
                 last_packets = packets;
                 ticks += 1;
                 if ticks % 5 == 0 {
-                    event(serde_json::json!({"event":"stats", "packets":packets, "underruns":conn.streamer_underruns()}));
+                    event(serde_json::json!({"event":"stats", "packets":packets, "underruns":underruns}));
                 }
             }
         }
     }
-    conn.stop().await?;
-    conn.disconnect().await?;
+    conn.close().await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn group_arguments_preserve_order_and_pcm_format() {
+        let args: Vec<String> = [
+            "sender", "--group",
+            r#"[{"host":"10.0.0.1","port":7000,"features":"0x1"},{"host":"10.0.0.2","port":7000,"features":"0x1"}]"#,
+            "48000", "2",
+        ].iter().map(|s| s.to_string()).collect();
+        let (devices, rate, channels) = parse_args(&args).unwrap();
+        assert_eq!((rate, channels), (48000, 2));
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].addresses[0].to_string(), "10.0.0.1");
+        assert_eq!(devices[1].addresses[0].to_string(), "10.0.0.2");
+    }
+
+    #[test]
+    fn group_rejects_duplicate_or_incomplete_targets() {
+        for json in [
+            r#"[{"host":"10.0.0.1","port":7000,"features":"0x1"}]"#,
+            r#"[{"host":"10.0.0.1","port":7000,"features":"0x1"},{"host":"10.0.0.1","port":7000,"features":"0x1"}]"#,
+        ] {
+            let args = ["sender", "--group", json, "48000", "2"]
+                .iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            assert!(parse_args(&args).is_err());
+        }
+    }
 
     #[test]
     fn variable_capture_chunks_preserve_stereo_samples() {

@@ -13,9 +13,13 @@ the release criteria, not marked passed. Do not advertise automatic
 stereo-pair forwarding from a single selection.
 
 Selecting one entry still targets that individual speaker. To target both
-members, users must select both entries. The current implementation uses
-independent streams for multiple selections, so synchronization and reliable
-playback with both selected remain required validation for that use case.
+members, users must select both entries. The published `0.12.5rc1` uses
+independent streams for multiple selections. The `0.12.5rc2` native group path
+shares one audio source and PTP clock. The user confirmed synchronization in
+both the file comparison and a full Windows EXE listening test on October 21.
+Endurance and recovery checks for this changed implementation remain incomplete,
+so this is a beta candidate.
+See [the October 21 investigation](sync-validation-2026-10-21.md).
 This scope change does not waive CI, single-speaker playback, or the other
 hardware checks below.
 

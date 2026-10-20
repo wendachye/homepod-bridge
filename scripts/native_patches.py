@@ -133,6 +133,8 @@ def apply_patches(archive: Path, source: Path, root: Path) -> None:
         ("airplay-pairing", "channel.rs", patch_channel, "channel_tests.rs"),
         ("airplay-discovery", "browser.rs", patch_browser, "discovery_tests.rs"),
         ("airplay-timing", "ptp.rs", patch_ptp, "ptp_clock.rs"),
+        ("airplay-client", "client.rs", lambda text: text, "group_support.rs"),
+        ("airplay-audio", "streamer.rs", lambda text: text, "group_sync_tests.rs"),
     ]
     with zipfile.ZipFile(archive) as upstream:
         for crate, module, transform, test_file in patches:

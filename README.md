@@ -2,7 +2,7 @@
 
 Stream **Windows system audio** ("what you hear") to an Apple **HomePod** over AirPlay. No license, no 10-minute cutoff — an open replacement for the TuneBlade use case.
 
-Pipeline: `WASAPI loopback (PyAudioWPatch) → int16 PCM/WAV → pyatv RAOP stream → HomePod`, wrapped in a reconnect watchdog. Audio is sent as PCM; no MP3 encoding is used in normal operation.
+Pipeline: `WASAPI loopback (PyAudioWPatch) → int16 PCM/WAV → native AirPlay 2/PTP group → HomePods`, wrapped in a reconnect watchdog. CLI streams and installations without the native helper use pyatv RAOP. Audio is sent as PCM; no MP3 encoding is used in normal operation.
 
 **Continuing on another Windows PC?** Follow the [Windows handoff guide](docs/windows-handoff.md) to get the correct branch, set up development, download the tested EXE, and continue hardware validation.
 
@@ -45,10 +45,11 @@ Options: `--latency 0.5` (pyatv receiver buffer in seconds), `-v` before the com
 both members. Playing the whole pair through a single selected entry is
 unsupported and deferred from the next release; the listening tests produced
 sound from only one member. Selecting one entry targets that individual
-speaker using the bundled native AirPlay 2 sender. Selecting both members
-starts independent streams and can produce echo; synchronized two-speaker
-playback remains under validation. See the
-[hardware test record](docs/windows-validation-2026-09-17.md).
+speaker using the bundled native AirPlay 2 sender. The `0.12.5rc2` tray
+uses one audio source and PTP clock for multiple selected HomePods, with
+individual volume controls. A full-app Windows listening test confirmed both
+HomePods synchronized. This candidate remains beta while endurance and recovery
+checks are incomplete; see the [sync investigation](docs/sync-validation-2026-10-21.md).
 Source installs must first build the native helper using the instructions below;
 the Python wheel alone uses pyatv.
 
@@ -59,8 +60,10 @@ the Python wheel alone uses pyatv.
   one selected entry is unsupported and deferred from the next release.
 - The native single-target HomePod sender adds roughly one second of live
   prebuffering plus the receiver's delay. It is intended for music, and
-  `raop_latency` does not adjust this transport. Separate selected devices
-  still use independent pyatv streams with best-effort synchronization.
+  `raop_latency` does not adjust this transport. The tray groups
+  selected HomePods through the native sender. Mixed device selections,
+  installations without the helper, and CLI streams use independent pyatv
+  sessions with best-effort synchronization.
 - The pyatv path has ~0.6 s latency (was ~3.2 s before 0.9.0). Most of it is the AirPlay
   receiver buffer, tunable via `raop_latency` in config.json (default 0.5 s,
   range 0.25-2.0). Raise it if audio breaks up on a busy network. Still not
@@ -90,7 +93,7 @@ the Python wheel alone uses pyatv.
 | Audio delay | The native stereo sender buffers about one second before receiver delay; suitable for music, not gaming. The pyatv path has ~0.6 s default delay, adjustable with `raop_latency` in config.json (min 0.25 s). |
 | Audio breaks up / stutters | For pyatv streams, raise `raop_latency` (try 1.0, then 1.5) and restart the tray. For the native stereo sender, inspect the log and check Wi-Fi quality; that setting does not apply. |
 | Only one speaker plays in a HomePod stereo pair | Select both entries to target both speakers. Automatic delivery to the whole pair from one selection is unsupported and deferred. A `Native AirPlay 2 stereo sender ready` log entry confirms connection, not delivery to both speakers. |
-| Multi-device offset | Separate selected targets get independent sessions, so audible echo can occur. Two-speaker synchronization remains under validation; excluding automatic stereo-pair forwarding does not resolve this limitation. |
+| Multi-device offset | Update the Windows EXE to `0.12.5rc2` and select both HomePods. The tray uses a common source and clock, validated in a full-app listening test. Mixed devices and CLI streams retain independent sessions. If a selected speaker is missing after startup discovery, Rescan and reconnect. |
 
 ## Tray app (v2)
 
